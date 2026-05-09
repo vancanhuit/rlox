@@ -6,7 +6,7 @@
 //!     DOT . null
 //!     EOF  null
 
-use rlox_tree::{Literal, Token, TokenType};
+use rlox_shared::{Literal, Token, TokenType};
 
 #[test]
 fn token_type_display_matches_upstream_dump_format() {

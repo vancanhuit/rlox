@@ -11,7 +11,7 @@
 
 use std::error::Error;
 
-use rlox_tree::{LoxError, Token, TokenType};
+use rlox_shared::{LoxError, Token, TokenType};
 
 #[test]
 fn scan_error_displays_with_line_prefix() {

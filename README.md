@@ -17,7 +17,8 @@ that picks its backend at compile time:
 
 | Crate | Role |
 | --- | --- |
-| [`crates/rlox-tree`](crates/rlox-tree/) | Tree-walk interpreter (jlox port, chapters 4–13). Released as `v0.2.0`. |
+| [`crates/rlox-shared`](crates/rlox-shared/) | Front-end primitives shared by both backends — scanner (eager `scan` and lazy `Scanner` iterator), tokens, base `LoxError`. |
+| [`crates/rlox-tree`](crates/rlox-tree/) | Tree-walk interpreter (jlox port, chapters 4–13). Released as `v0.2.0`. Depends on `rlox-shared`. |
 | [`crates/rlox-vm`](crates/rlox-vm/) | Bytecode VM (clox port, chapters 14–30). **In progress.** |
 | [`crates/rlox`](crates/rlox/) | Umbrella binary. Two mutually-exclusive Cargo features (`tree` default, `vm`) select which backend the binary links to. |
 
@@ -61,8 +62,8 @@ stack VM with hand-written bytecode) exercised via `cargo test -p rlox-vm`.
 | Phase | Chapter | Topic                                                | Status |
 | ----- | ------- | ---------------------------------------------------- | ------ |
 | 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | done |
-| 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | in progress |
-| 16    | 16      | Scanning on Demand                                   | pending |
+| 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | done |
+| 16    | 16      | Scanning on Demand (lazy `Scanner` iterator + `rlox-shared` extraction) | done |
 | 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode) | pending |
 | 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons)          | pending |
 | 19    | 19      | Strings (interned via `Heap`)                        | pending |

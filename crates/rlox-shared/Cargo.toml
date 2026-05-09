@@ -1,6 +1,6 @@
 [package]
-name = "rlox-tree"
-description = "Tree-walk interpreter for the Lox language (jlox port, chapters 4-13)."
+name = "rlox-shared"
+description = "Lexer, tokens, and shared error types used by both Lox interpreter backends."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,11 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [lib]
-name = "rlox_tree"
+name = "rlox_shared"
 path = "src/lib.rs"
-
-[dependencies]
-rlox-shared = { workspace = true }
 
 [lints]
 workspace = true

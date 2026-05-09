@@ -1,4 +1,4 @@
-//! `rlox` — a Rust port of the tree-walk Lox interpreter from
+//! `rlox-tree` — a Rust port of the tree-walk Lox interpreter from
 //! <https://craftinginterpreters.com>.
 //!
 //! Milestone 1 covered chapters 4–7 (scanner, parser, expression
@@ -7,19 +7,35 @@
 //! expression-level entry points ([`parse`], [`evaluate`]) and
 //! program-level entry points ([`parse_program`], [`Interpreter`],
 //! [`run`]/[`run_to`]).
+//!
+//! Chapter 16 of milestone 3 extracted the lexer + token types + base
+//! error enum into [`rlox_shared`]. This crate re-exports them through
+//! alias modules so existing callers (and the rlox-tree internals)
+//! continue to use `rlox_tree::token::*`, `rlox_tree::scanner::*`, etc.
+//! unchanged.
 
 use std::io::Write;
 
 pub mod ast;
 pub mod callable;
 pub mod environment;
-pub mod error;
 pub mod interpreter;
 pub mod parser;
 pub mod resolver;
-pub mod scanner;
-pub mod token;
 pub mod value;
+
+// Alias modules forwarding to `rlox-shared` so internal `crate::token`
+// and `crate::error` and `crate::scanner` paths keep working without a
+// crate-wide rename.
+pub mod error {
+    pub use rlox_shared::error::*;
+}
+pub mod scanner {
+    pub use rlox_shared::scanner::*;
+}
+pub mod token {
+    pub use rlox_shared::token::*;
+}
 
 pub use ast::{Expr, FunctionDecl, Stmt};
 pub use callable::{Callable, LoxClass, LoxFunction, LoxInstance, NativeFn};

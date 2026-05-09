@@ -2,16 +2,16 @@
 //!
 //! Reference cases are transcribed from the upstream Crafting Interpreters
 //! test suite (e.g. `test/scanning/numbers.lox`). The scanner is exposed via
-//! `rlox_tree::scan(source)` which returns `(tokens, errors)` so callers can
+//! `rlox_shared::scan(source)` which returns `(tokens, errors)` so callers can
 //! continue past lexical errors (matching jlox's behaviour).
 
-use rlox_tree::{Literal, LoxError, TokenType, scan};
+use rlox_shared::{Literal, LoxError, TokenType, scan};
 
-fn types(tokens: &[rlox_tree::Token]) -> Vec<TokenType> {
+fn types(tokens: &[rlox_shared::Token]) -> Vec<TokenType> {
     tokens.iter().map(|t| t.ttype).collect()
 }
 
-fn dump(tokens: &[rlox_tree::Token]) -> String {
+fn dump(tokens: &[rlox_shared::Token]) -> String {
     tokens
         .iter()
         .map(ToString::to_string)
@@ -247,4 +247,95 @@ NUMBER 123 123.0
 DOT . null
 EOF  null";
     assert_eq!(dump(&tokens), expected);
+}
+
+// ---- Chapter 16 — lazy `Scanner` iterator ----
+//
+// These tests exercise the streaming API the chapter 17 single-pass
+// compiler depends on. They share the underlying state machine with the
+// eager `scan()` above, so the contract is:
+//
+//   * Same token stream, same source-line attribution, same EOF terminator.
+//   * Same error contents at the same source-position relative to surrounding tokens.
+//   * Lazy: only as many bytes are consumed as the iterator advances.
+
+use rlox_shared::Scanner;
+
+#[test]
+fn lazy_scanner_yields_same_token_stream_as_eager_scan() {
+    let src = "var pi = 3.14; // greet\n\"hello\";";
+    let (eager_tokens, eager_errs) = scan(src);
+    assert!(eager_errs.is_empty());
+
+    let lazy: Vec<_> = Scanner::new(src).collect();
+    let lazy_oks: Vec<_> = lazy
+        .iter()
+        .map(|r| r.as_ref().expect("clean source").clone())
+        .collect();
+    assert_eq!(lazy_oks, eager_tokens);
+}
+
+#[test]
+fn lazy_scanner_emits_eof_exactly_once_then_none() {
+    let mut s = Scanner::new("");
+    // The first event is EOF for empty input.
+    let first = s.next().expect("EOF token");
+    let token = first.expect("EOF is not an error");
+    assert_eq!(token.ttype, TokenType::Eof);
+    assert!(s.next().is_none(), "no more events after EOF");
+}
+
+#[test]
+fn lazy_scanner_interleaves_errors_with_tokens_in_source_order() {
+    // The `@` triggers an "Unexpected character." error, sandwiched
+    // between two well-formed tokens.
+    let mut s = Scanner::new("a @ b");
+    let first = s.next().unwrap().expect("identifier 'a'");
+    assert_eq!(first.ttype, TokenType::Identifier);
+    assert_eq!(first.lexeme, "a");
+
+    let second = s.next().unwrap();
+    let LoxError::Scan { message, .. } = second.unwrap_err() else {
+        panic!("expected scan error for '@'");
+    };
+    assert_eq!(message, "Unexpected character.");
+
+    let third = s.next().unwrap().expect("identifier 'b'");
+    assert_eq!(third.ttype, TokenType::Identifier);
+    assert_eq!(third.lexeme, "b");
+}
+
+#[test]
+fn lazy_scanner_skips_whitespace_and_comments_without_emitting() {
+    // Whitespace and `//` line comments are silently dropped — no
+    // events for them; the next event after a long stretch of trivia
+    // is the next real token.
+    let mut s = Scanner::new("   // a comment\n\t var");
+    let first = s.next().unwrap().unwrap();
+    assert_eq!(first.ttype, TokenType::Var);
+    assert_eq!(first.line, 2, "line tracking respects newlines");
+}
+
+#[test]
+fn lazy_scanner_advances_one_call_at_a_time() {
+    // Pulling N times yields exactly N events; if we stop early we
+    // never see anything further down the source. (Spot-check that
+    // the iterator is actually lazy rather than secretly eager.)
+    let src = "1 + 2 + 3 + 4 + 5";
+    let mut s = Scanner::new(src);
+    let _ = s.next().unwrap(); // 1
+    let _ = s.next().unwrap(); // +
+    let two = s.next().unwrap().unwrap();
+    assert_eq!(two.lexeme, "2");
+}
+
+#[test]
+fn lazy_scanner_line_method_tracks_through_newlines() {
+    let mut s = Scanner::new("1\n\n\n2");
+    s.next(); // consumes '1'
+    // newlines are part of `next()`'s internal stepping; pulling the
+    // second number should now report line 4.
+    let two = s.next().unwrap().unwrap();
+    assert_eq!(two.line, 4);
+    assert_eq!(s.line(), 4);
 }
