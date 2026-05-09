@@ -16,8 +16,10 @@ use std::mem;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::HashMap;
+
 use crate::ast::{Expr, Stmt};
-use crate::callable::{Callable, LoxFunction, NativeFn};
+use crate::callable::{Callable, LoxClass, LoxFunction, LoxInstance, NativeFn};
 use crate::environment::Environment;
 use crate::error::LoxError;
 use crate::resolver::{Locals, lookup_key};
@@ -197,6 +199,8 @@ pub fn stringify(value: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Callable(Callable::Native(n)) => format!("<native fn {}>", n.name),
         Value::Callable(Callable::Function(f)) => format!("<fn {}>", f.decl.name.lexeme),
+        Value::Callable(Callable::Class(c)) => format!("<class {}>", c.name),
+        Value::Instance(inst) => format!("{} instance", inst.class.name),
     }
 }
 
@@ -322,6 +326,7 @@ impl<'w> Interpreter<'w> {
                     // time — closures see surrounding bindings even
                     // after the declaring scope exits.
                     closure: self.env.clone(),
+                    is_initializer: false,
                 };
                 self.env.define(
                     decl.name.lexeme.clone(),
@@ -335,6 +340,29 @@ impl<'w> Interpreter<'w> {
                     None => Value::Nil,
                 };
                 Err(InterpError::Return(v))
+            }
+            Stmt::Class { name, methods } => {
+                // Two-step define so the class can refer to itself by
+                // name from inside its own methods (matches jlox).
+                self.env.define(name.lexeme.clone(), Value::Nil);
+                let mut method_table: HashMap<String, Rc<LoxFunction>> = HashMap::new();
+                for decl in methods {
+                    let is_initializer = decl.name.lexeme == "init";
+                    let func = LoxFunction {
+                        decl: Rc::clone(decl),
+                        closure: self.env.clone(),
+                        is_initializer,
+                    };
+                    method_table.insert(decl.name.lexeme.clone(), Rc::new(func));
+                }
+                let klass = Rc::new(LoxClass {
+                    name: name.lexeme.clone(),
+                    methods: method_table,
+                });
+                let _ = self
+                    .env
+                    .assign(name, Value::Callable(Callable::Class(klass)));
+                Ok(())
             }
         }
     }
@@ -391,6 +419,27 @@ impl<'w> Interpreter<'w> {
                 }
                 self.call(&callee_value, paren, args)
             }
+            Expr::Get { object, name } => {
+                let obj = self.eval(object)?;
+                match obj {
+                    Value::Instance(inst) => Ok(inst.get(name)?),
+                    _ => Err(LoxError::runtime(name, "Only instances have properties.").into()),
+                }
+            }
+            Expr::Set {
+                object,
+                name,
+                value,
+            } => {
+                let obj = self.eval(object)?;
+                let Value::Instance(inst) = obj else {
+                    return Err(LoxError::runtime(name, "Only instances have fields.").into());
+                };
+                let v = self.eval(value)?;
+                inst.set(name, v.clone());
+                Ok(v)
+            }
+            Expr::This(keyword) => Ok(self.lookup_variable(expr, keyword)?),
         }
     }
 
@@ -409,7 +458,21 @@ impl<'w> Interpreter<'w> {
         match callable {
             Callable::Native(n) => Ok((n.func)(&args)?),
             Callable::Function(f) => self.call_function(f, args),
+            Callable::Class(c) => self.instantiate_class(c, args),
         }
+    }
+
+    /// Construct a fresh [`LoxInstance`], run its `init` method (if any)
+    /// with the provided arguments, and return the populated instance.
+    fn instantiate_class(&mut self, class: &Rc<LoxClass>, args: Vec<Value>) -> InterpRes<Value> {
+        let instance = LoxInstance::new(Rc::clone(class));
+        if let Some(initializer) = class.find_method("init") {
+            let bound = initializer.bind(Rc::clone(&instance));
+            // We discard the initializer's return value; `call_function`
+            // already maps it to `this` because `is_initializer` is set.
+            let _ = self.call_function(&bound, args)?;
+        }
+        Ok(Value::Instance(instance))
     }
 
     /// Resolve `expr` (a variable read) by consulting the resolver's
@@ -446,7 +509,22 @@ impl<'w> Interpreter<'w> {
         for (param, arg) in func.decl.params.iter().zip(args) {
             env.define(param.lexeme.clone(), arg);
         }
-        match self.execute_block(&func.decl.body, env) {
+        let result = self.execute_block(&func.decl.body, env);
+        if func.is_initializer {
+            // An initializer always yields `this`, regardless of whether
+            // the body fell off the end or executed a bare `return;`.
+            // `this` lives at depth 0 of the closure (the `bind`-time
+            // scope); the resolver enforces this layout statically.
+            let this = func
+                .closure
+                .get_at(0, "this")
+                .expect("initializer closure must define 'this'");
+            return match result {
+                Ok(()) | Err(InterpError::Return(_)) => Ok(this),
+                Err(other) => Err(other),
+            };
+        }
+        match result {
             Ok(()) => Ok(Value::Nil),
             Err(InterpError::Return(v)) => Ok(v),
             Err(other) => Err(other),

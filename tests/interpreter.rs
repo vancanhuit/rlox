@@ -499,4 +499,162 @@ print double(triple(5));
 ";
         assert_eq!(run(src).unwrap(), "30\n");
     }
+
+    // ---- chapter 12: classes, methods, properties, this, init ----
+
+    #[test]
+    fn class_value_displays_with_class_keyword() {
+        assert_eq!(run("class Foo {} print Foo;").unwrap(), "<class Foo>\n");
+    }
+
+    #[test]
+    fn calling_a_class_constructs_an_instance() {
+        let src = "class Bagel {} var b = Bagel(); print b;";
+        assert_eq!(run(src).unwrap(), "Bagel instance\n");
+    }
+
+    #[test]
+    fn instance_fields_can_be_set_and_read() {
+        let src = "\
+class Point {}
+var p = Point();
+p.x = 1;
+p.y = 2;
+print p.x;
+print p.y;
+";
+        assert_eq!(run(src).unwrap(), "1\n2\n");
+    }
+
+    #[test]
+    fn methods_can_be_called_on_an_instance() {
+        let src = "\
+class Greeter {
+  greet() { print \"hi\"; }
+}
+Greeter().greet();
+";
+        assert_eq!(run(src).unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn this_inside_method_refers_to_the_receiver() {
+        let src = "\
+class Box {
+  set(v) { this.value = v; }
+  get() { return this.value; }
+}
+var b = Box();
+b.set(42);
+print b.get();
+";
+        assert_eq!(run(src).unwrap(), "42\n");
+    }
+
+    #[test]
+    fn methods_can_be_extracted_and_called_later_keeping_this() {
+        // Extracting a method binds `this` at lookup time, so calling
+        // the bound method later still finds the original receiver.
+        let src = "\
+class Thing {
+  name() { return this.label; }
+}
+var t = Thing();
+t.label = \"ok\";
+var fn = t.name;
+print fn();
+";
+        assert_eq!(run(src).unwrap(), "ok\n");
+    }
+
+    #[test]
+    fn fields_shadow_methods_with_same_name() {
+        // jlox semantics: a field defined on the instance wins over the
+        // class's method of the same name.
+        let src = "\
+class Foo {
+  bar() { return \"method\"; }
+}
+var f = Foo();
+f.bar = \"field\";
+print f.bar;
+";
+        assert_eq!(run(src).unwrap(), "field\n");
+    }
+
+    #[test]
+    fn unknown_property_is_runtime_error() {
+        let errs = run("class Foo {} Foo().bogus;").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error, got {:?}", errs[0]);
+        };
+        assert_eq!(message, "Undefined property 'bogus'.");
+    }
+
+    #[test]
+    fn property_access_on_non_instance_is_runtime_error() {
+        let errs = run("var x = 1; print x.field;").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Only instances have properties.");
+    }
+
+    #[test]
+    fn init_method_runs_with_constructor_arguments() {
+        let src = "\
+class Point {
+  init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+var p = Point(3, 4);
+print p.x;
+print p.y;
+";
+        assert_eq!(run(src).unwrap(), "3\n4\n");
+    }
+
+    #[test]
+    fn init_arity_is_respected_at_call_site() {
+        let src = "\
+class Box {
+  init(x) { this.x = x; }
+}
+Box();
+";
+        let errs = run(src).unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Expected 1 arguments but got 0.");
+    }
+
+    #[test]
+    fn calling_init_directly_returns_this() {
+        // `b.init(...)` re-runs the initializer on an existing instance
+        // and yields the same instance back. Matches jlox.
+        let src = "\
+class Box {
+  init(x) { this.x = x; }
+}
+var b = Box(1);
+print b.init(2);
+print b.x;
+";
+        assert_eq!(run(src).unwrap(), "Box instance\n2\n");
+    }
+
+    #[test]
+    fn bare_return_in_initializer_yields_this() {
+        let src = "\
+class Foo {
+  init() { return; }
+}
+var f = Foo();
+print f;
+";
+        assert_eq!(run(src).unwrap(), "Foo instance\n");
+    }
 }

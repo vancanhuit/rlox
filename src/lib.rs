@@ -22,7 +22,7 @@ pub mod token;
 pub mod value;
 
 pub use ast::{Expr, FunctionDecl, Stmt};
-pub use callable::{Callable, LoxFunction, NativeFn};
+pub use callable::{Callable, LoxClass, LoxFunction, LoxInstance, NativeFn};
 pub use environment::Environment;
 pub use error::{LoxError, Result};
 pub use interpreter::{Interpreter, evaluate, evaluate_in, stringify};
