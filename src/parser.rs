@@ -1,5 +1,7 @@
 //! Pratt parser for Lox expressions (chapter 6) extended with statements,
-//! variable declarations, and assignment (chapter 8).
+//! variable declarations, and assignment (chapter 8), then control flow
+//! and short-circuit logical operators (chapter 9). `for` loops are
+//! desugared at parse time into the existing `Block` + `While` nodes.
 
 use crate::ast::{Expr, Stmt};
 use crate::error::LoxError;
@@ -51,20 +53,25 @@ impl<'t> Pos<'t> {
 
 fn prefix_bp(t: TokenType) -> Option<Bp> {
     if matches!(t, TokenType::Bang | TokenType::Minus) {
-        Some(13)
+        // Bumped to 15 to stay above the new factor rung at 11/12.
+        Some(15)
     } else {
         None
     }
 }
 
 fn infix_bp(t: TokenType) -> Option<(Bp, Bp)> {
+    // Lox precedence, lowest binding to highest. Each rung leaves a gap so
+    // the prefix unary at 15 has room to live above the highest infix.
     let pair = match t {
-        TokenType::EqualEqual | TokenType::BangEqual => (3, 4),
+        TokenType::Or => (1, 2),
+        TokenType::And => (3, 4),
+        TokenType::EqualEqual | TokenType::BangEqual => (5, 6),
         TokenType::Greater | TokenType::GreaterEqual | TokenType::Less | TokenType::LessEqual => {
-            (5, 6)
+            (7, 8)
         }
-        TokenType::Plus | TokenType::Minus => (7, 8),
-        TokenType::Slash | TokenType::Star => (9, 10),
+        TokenType::Plus | TokenType::Minus => (9, 10),
+        TokenType::Slash | TokenType::Star => (11, 12),
         _ => return None,
     };
     Some(pair)
@@ -132,10 +139,20 @@ fn parse_bp(p: &mut Pos<'_>, min_bp: Bp) -> Result<Expr, LoxError> {
         let op = p.head().clone();
         p.bump();
         let rhs = parse_bp(p, rbp)?;
-        lhs = Expr::Binary {
-            left: Box::new(lhs),
-            op,
-            right: Box::new(rhs),
+        // `and` / `or` go into a dedicated AST variant because they
+        // short-circuit and return the operand value (not a coerced bool).
+        lhs = if matches!(op.ttype, TokenType::And | TokenType::Or) {
+            Expr::Logical {
+                left: Box::new(lhs),
+                op,
+                right: Box::new(rhs),
+            }
+        } else {
+            Expr::Binary {
+                left: Box::new(lhs),
+                op,
+                right: Box::new(rhs),
+            }
         };
     }
     Ok(lhs)
@@ -208,6 +225,15 @@ fn var_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
 }
 
 fn statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    if p.eat(TokenType::If) {
+        return if_statement(p);
+    }
+    if p.eat(TokenType::While) {
+        return while_statement(p);
+    }
+    if p.eat(TokenType::For) {
+        return for_statement(p);
+    }
     if p.eat(TokenType::Print) {
         return print_statement(p);
     }
@@ -215,6 +241,97 @@ fn statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
         return Ok(Stmt::Block(block(p)?));
     }
     expression_statement(p)
+}
+
+fn if_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    expect(p, TokenType::LeftParen, "Expect '(' after 'if'.")?;
+    let condition = assignment(p)?;
+    expect(p, TokenType::RightParen, "Expect ')' after if condition.")?;
+    let then_branch = Box::new(statement(p)?);
+    // The `else` keyword binds to the *nearest* preceding `if` because
+    // `statement` is called recursively — the textbook dangling-else
+    // resolution falls out of the recursive descent for free.
+    let else_branch = if p.eat(TokenType::Else) {
+        Some(Box::new(statement(p)?))
+    } else {
+        None
+    };
+    Ok(Stmt::If {
+        condition,
+        then_branch,
+        else_branch,
+    })
+}
+
+fn while_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    expect(p, TokenType::LeftParen, "Expect '(' after 'while'.")?;
+    let condition = assignment(p)?;
+    expect(p, TokenType::RightParen, "Expect ')' after condition.")?;
+    let body = Box::new(statement(p)?);
+    Ok(Stmt::While { condition, body })
+}
+
+/// Parse a `for` loop and *desugar* it on the spot:
+///
+/// ```text
+/// for (init; cond; incr) body
+/// ⇒
+/// {
+///   init
+///   while (cond) {
+///     body
+///     incr;
+///   }
+/// }
+/// ```
+///
+/// Each of `init`, `cond`, `incr` is optional; an omitted condition
+/// defaults to `true`. This matches jlox `Parser.forStatement` and means
+/// the interpreter never grows a dedicated `For` node.
+fn for_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    expect(p, TokenType::LeftParen, "Expect '(' after 'for'.")?;
+
+    let initializer: Option<Stmt> = if p.eat(TokenType::Semicolon) {
+        None
+    } else if p.eat(TokenType::Var) {
+        Some(var_declaration(p)?)
+    } else {
+        Some(expression_statement(p)?)
+    };
+
+    let condition: Expr = if p.check(TokenType::Semicolon) {
+        Expr::Literal(Value::Bool(true))
+    } else {
+        assignment(p)?
+    };
+    expect(p, TokenType::Semicolon, "Expect ';' after loop condition.")?;
+
+    let increment: Option<Expr> = if p.check(TokenType::RightParen) {
+        None
+    } else {
+        Some(assignment(p)?)
+    };
+    expect(p, TokenType::RightParen, "Expect ')' after for clauses.")?;
+
+    let mut body = statement(p)?;
+
+    // body = { body; increment; }
+    if let Some(incr) = increment {
+        body = Stmt::Block(vec![body, Stmt::Expression(incr)]);
+    }
+
+    // body = while (cond) body
+    body = Stmt::While {
+        condition,
+        body: Box::new(body),
+    };
+
+    // body = { initializer; body }
+    if let Some(init) = initializer {
+        body = Stmt::Block(vec![init, body]);
+    }
+
+    Ok(body)
 }
 
 fn print_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {

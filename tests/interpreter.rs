@@ -257,4 +257,102 @@ print a;
         let errs = run("{ var inner = 1; 1 + \"x\"; }").unwrap_err();
         assert!(matches!(errs[0], LoxError::Runtime { .. }));
     }
+
+    // ---- chapter 9: control flow + short-circuit logical operators ----
+
+    #[test]
+    fn if_executes_then_branch_when_truthy() {
+        assert_eq!(run("if (true) print 1;").unwrap(), "1\n");
+    }
+
+    #[test]
+    fn if_executes_else_branch_when_falsy() {
+        assert_eq!(run("if (false) print 1; else print 2;").unwrap(), "2\n");
+    }
+
+    #[test]
+    fn if_with_no_else_is_a_no_op_when_falsy() {
+        assert_eq!(run("if (false) print 1; print 2;").unwrap(), "2\n");
+    }
+
+    #[test]
+    fn if_uses_lox_truthiness_for_non_bool_conditions() {
+        // nil is falsy, every other non-false value is truthy.
+        assert_eq!(run("if (nil) print 1; else print 2;").unwrap(), "2\n");
+        assert_eq!(run("if (0) print 1; else print 2;").unwrap(), "1\n");
+        assert_eq!(run(r#"if ("") print 1; else print 2;"#).unwrap(), "1\n");
+    }
+
+    #[test]
+    fn while_loop_iterates_until_condition_is_false() {
+        let src = "var i = 0; while (i < 3) { print i; i = i + 1; }";
+        assert_eq!(run(src).unwrap(), "0\n1\n2\n");
+    }
+
+    #[test]
+    fn while_loop_does_not_execute_when_condition_starts_false() {
+        assert_eq!(run("while (false) print 1; print 2;").unwrap(), "2\n");
+    }
+
+    #[test]
+    fn for_loop_runs_classic_counter() {
+        let src = "for (var i = 0; i < 3; i = i + 1) print i;";
+        assert_eq!(run(src).unwrap(), "0\n1\n2\n");
+    }
+
+    #[test]
+    fn for_loop_with_external_initializer() {
+        // Init clause empty; loop variable lives in the outer scope.
+        let src = "var i = 1; for (; i < 4; i = i + 1) print i;";
+        assert_eq!(run(src).unwrap(), "1\n2\n3\n");
+    }
+
+    #[test]
+    fn for_loop_init_variable_does_not_leak_to_outer_scope() {
+        // The desugared `for` wraps its init in a Block, so `i` is
+        // out of scope after the loop. Reading it must error.
+        let errs = run("for (var i = 0; i < 1; i = i + 1) print i; print i;").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error, got {:?}", errs[0]);
+        };
+        assert_eq!(message, "Undefined variable 'i'.");
+    }
+
+    #[test]
+    fn or_returns_first_truthy_operand_without_evaluating_the_rest() {
+        // `nil or 1 or runtime_error` ⇒ short-circuits at the truthy `1`,
+        // never reaching the would-be runtime error.
+        assert_eq!(run(r#"print nil or 1 or (1 + "x");"#).unwrap(), "1\n");
+    }
+
+    #[test]
+    fn or_returns_first_operand_when_truthy() {
+        // Book example: `print "hi" or 2;` → "hi"
+        assert_eq!(run(r#"print "hi" or 2;"#).unwrap(), "hi\n");
+    }
+
+    #[test]
+    fn or_falls_through_to_last_operand_when_all_falsy() {
+        assert_eq!(run("print nil or false;").unwrap(), "false\n");
+    }
+
+    #[test]
+    fn and_returns_first_falsy_operand_without_evaluating_the_rest() {
+        // `false and runtime_error` ⇒ short-circuits at the falsy `false`.
+        assert_eq!(run(r#"print false and (1 + "x");"#).unwrap(), "false\n");
+    }
+
+    #[test]
+    fn and_returns_last_operand_when_all_truthy() {
+        // Book example: `print 1 and 2;` → 2
+        assert_eq!(run("print 1 and 2;").unwrap(), "2\n");
+    }
+
+    #[test]
+    fn while_uses_lox_truthiness_for_condition() {
+        // Non-bool truthy condition keeps looping; we mutate the variable
+        // to a falsy nil to exit.
+        let src = "var i = 1; while (i) { print i; i = nil; }";
+        assert_eq!(run(src).unwrap(), "1\n");
+    }
 }

@@ -1,5 +1,6 @@
 //! Tree-walk interpreter (chapter 7) extended with statements + variable
-//! scoping (chapter 8).
+//! scoping (chapter 8) and control flow + short-circuit logical operators
+//! (chapter 9).
 //!
 //! Public surface:
 //!
@@ -148,6 +149,22 @@ pub fn evaluate_in(expr: &Expr, env: &mut Environment) -> Result<Value, LoxError
             let v = evaluate_in(value, env)?;
             env.assign(name, v)
         }
+        Expr::Logical { left, op, right } => {
+            // Short-circuit: evaluate the left operand first, decide
+            // whether to evaluate the right based on truthiness, and
+            // return the *operand* itself rather than a coerced bool
+            // (e.g. `nil or "x"` evaluates to `"x"`, `1 and 2` to `2`).
+            let l = evaluate_in(left, env)?;
+            match op.ttype {
+                TokenType::Or if is_truthy(&l) => Ok(l),
+                TokenType::And if !is_truthy(&l) => Ok(l),
+                TokenType::Or | TokenType::And => evaluate_in(right, env),
+                _ => unreachable!(
+                    "parser does not produce {:?} as a logical operator",
+                    op.ttype
+                ),
+            }
+        }
     }
 }
 
@@ -224,6 +241,27 @@ impl<'w> Interpreter<'w> {
                 Ok(())
             }
             Stmt::Block(stmts) => self.execute_block(stmts),
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                if is_truthy(&evaluate_in(condition, &mut self.env)?) {
+                    self.execute(then_branch)
+                } else if let Some(alt) = else_branch {
+                    self.execute(alt)
+                } else {
+                    Ok(())
+                }
+            }
+            Stmt::While { condition, body } => {
+                // Re-evaluate the condition every iteration; the body may
+                // mutate variables it reads from.
+                while is_truthy(&evaluate_in(condition, &mut self.env)?) {
+                    self.execute(body)?;
+                }
+                Ok(())
+            }
         }
     }
 
