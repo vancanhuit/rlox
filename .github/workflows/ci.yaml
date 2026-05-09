@@ -51,7 +51,14 @@ jobs:
   # workflow attaches the matching tarballs to a GitHub Release for tag
   # pushes.
   build:
-    name: Build (${{ matrix.target }})
+    # Two axes: target architecture × backend feature.
+    #   - features=tree (default) — the chapter 4-13 tree-walk interpreter.
+    #     Smoke-tested against the full `.lox` corpus.
+    #   - features=vm — the chapter 14+ bytecode VM. At chapter 17 it only
+    #     handles a single expression per file; the smoke corpus broadens
+    #     to cover it once chapter 21 (Globals) lands and the VM gains
+    #     statements and `print`.
+    name: Build (${{ matrix.target }}, ${{ matrix.features }})
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -59,8 +66,24 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            features: tree
+            cargo_features: ""
+            backend_label: tree
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            features: vm
+            cargo_features: "--no-default-features --features vm"
+            backend_label: vm
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
+            features: tree
+            cargo_features: ""
+            backend_label: tree
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            features: vm
+            cargo_features: "--no-default-features --features vm"
+            backend_label: vm
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v6
@@ -74,8 +97,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # Per-target cache so the two matrix legs don't thrash.
-          key: ${{ matrix.target }}
+          # Per-(target, features) cache so the matrix legs don't thrash.
+          key: ${{ matrix.target }}-${{ matrix.features }}
 
       - name: Resolve development version
         id: version
@@ -89,23 +112,28 @@ jobs:
           echo "Resolved development version: $ver"
 
       - name: Build release binary
-        run: cargo build --release --locked --bin rlox
+        run: cargo build --release --locked --bin rlox ${{ matrix.cargo_features }}
 
       - name: Smoke-test the binary
         # Drives target/release/rlox against scripts/smoke/*.lox and asserts
         # on stdout / stderr / exit code per the //expect: directives.
         # `--no-build` reuses the artifact from the previous step.
+        # The smoke corpus exercises full Lox programs (statements +
+        # `print` + classes); the bytecode VM only catches up at
+        # chapter 21, so for now smoke runs only on the tree-walk leg.
+        if: matrix.features == 'tree'
         run: python3 scripts/smoke_test.py --no-build
 
       - name: Package binary
         env:
           VERSION: ${{ steps.version.outputs.version }}
           TARGET: ${{ matrix.target }}
+          BACKEND: ${{ matrix.backend_label }}
         run: |
           set -euo pipefail
           mkdir -p dist
-          archive="rlox_${VERSION}_${TARGET}.tar.gz"
-          stage="dist/rlox_${VERSION}_${TARGET}"
+          archive="rlox-${BACKEND}_${VERSION}_${TARGET}.tar.gz"
+          stage="dist/rlox-${BACKEND}_${VERSION}_${TARGET}"
           mkdir -p "$stage"
           cp target/release/rlox "$stage/rlox"
           cp README.md LICENSE "$stage/" 2>/dev/null || true
@@ -117,9 +145,9 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: rlox-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          name: rlox-${{ matrix.backend_label }}-${{ steps.version.outputs.version }}-${{ matrix.target }}
           path: |
-            dist/rlox_*.tar.gz
-            dist/rlox_*.tar.gz.sha256
+            dist/rlox-*.tar.gz
+            dist/rlox-*.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
