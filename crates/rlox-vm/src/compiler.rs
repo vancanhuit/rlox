@@ -52,15 +52,21 @@ pub fn compile(source: &str) -> Result<Chunk, Vec<LoxError>> {
 /// matters: `parse_precedence(p)` continues while the *next* token's
 /// infix precedence is `>= p`.
 ///
-/// Slots reserved for chapters 18+ are kept in the enum so the ordering
-/// remains stable as we light them up.
+/// Slots reserved for chapters 21+ (`Or`/`And`/`Assignment`/`Call`/
+/// `Primary`) are kept commented out so the ordering remains stable as
+/// we light them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
     None = 0,
-    Term = 6,   // + -
-    Factor = 7, // * /
-    Unary = 8,  // ! -
+    // Assignment, // =
+    // Or,         // or
+    // And,        // and
+    Equality = 4,   // == !=
+    Comparison = 5, // < > <= >=
+    Term = 6,       // + -
+    Factor = 7,     // * /
+    Unary = 8,      // ! -
 }
 
 impl Precedence {
@@ -69,10 +75,11 @@ impl Precedence {
     /// left-associative.
     const fn next_higher(self) -> Self {
         match self {
-            Self::None => Self::Term,
+            Self::None => Self::Equality,
+            Self::Equality => Self::Comparison,
+            Self::Comparison => Self::Term,
             Self::Term => Self::Factor,
-            // No rule emits at Factor and recurses higher than Unary,
-            // and nothing in chapter 17 is higher than Unary, so saturate.
+            // Nothing in chapter 18 is higher than Unary, so saturate.
             Self::Factor | Self::Unary => Self::Unary,
         }
     }
@@ -88,6 +95,9 @@ enum ParseFn {
     Unary,
     Binary,
     Number,
+    /// Parses `nil`, `true`, `false`. The token type discriminates which
+    /// `OP_NIL` / `OP_TRUE` / `OP_FALSE` opcode is emitted.
+    Literal,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -125,6 +135,32 @@ const fn rule_for(t: TokenType) -> ParseRule {
             infix: ParseFn::None,
             precedence: Precedence::None,
         },
+        // Chapter 18 — literals.
+        TokenType::Nil | TokenType::True | TokenType::False => ParseRule {
+            prefix: ParseFn::Literal,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
+        // Chapter 18 — logical NOT (prefix only).
+        TokenType::Bang => ParseRule {
+            prefix: ParseFn::Unary,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
+        // Chapter 18 — equality (lower precedence than comparison).
+        TokenType::EqualEqual | TokenType::BangEqual => ParseRule {
+            prefix: ParseFn::None,
+            infix: ParseFn::Binary,
+            precedence: Precedence::Equality,
+        },
+        // Chapter 18 — ordering comparisons.
+        TokenType::Greater | TokenType::GreaterEqual | TokenType::Less | TokenType::LessEqual => {
+            ParseRule {
+                prefix: ParseFn::None,
+                infix: ParseFn::Binary,
+                precedence: Precedence::Comparison,
+            }
+        }
         // Every other token has no rule yet.
         _ => ParseRule {
             prefix: ParseFn::None,
@@ -244,9 +280,11 @@ impl<'src> Compiler<'src> {
     // ---- Pratt core -----------------------------------------------------
 
     /// Parse and emit any expression. Equivalent to clox's
-    /// `expression()` — kicks off at the lowest precedence rung.
+    /// `expression()` — kicks off at the lowest *active* precedence
+    /// rung (chapter 18: equality; chapter 21+ will lower it to
+    /// `Assignment`).
     fn expression(&mut self) {
-        self.parse_precedence(Precedence::Term);
+        self.parse_precedence(Precedence::Equality);
     }
 
     /// Recursive precedence-climbing parser.
@@ -276,10 +314,20 @@ impl<'src> Compiler<'src> {
             ParseFn::Unary => self.unary(),
             ParseFn::Binary => self.binary(),
             ParseFn::Number => self.number(),
+            ParseFn::Literal => self.literal(),
         }
     }
 
     // ---- grammar productions --------------------------------------------
+
+    fn literal(&mut self) {
+        match self.previous_token().ttype {
+            TokenType::Nil => self.emit_op(OpCode::Nil),
+            TokenType::True => self.emit_op(OpCode::True),
+            TokenType::False => self.emit_op(OpCode::False),
+            other => unreachable!("Pratt rule for {other:?} dispatched to literal"),
+        }
+    }
 
     fn number(&mut self) {
         // The scanner attaches a `Literal::Number` to every Number
@@ -305,6 +353,7 @@ impl<'src> Compiler<'src> {
         self.parse_precedence(Precedence::Unary);
         match op_kind {
             TokenType::Minus => self.emit_op(OpCode::Negate),
+            TokenType::Bang => self.emit_op(OpCode::Not),
             other => unreachable!("Pratt rule for {other:?} dispatched to unary"),
         }
     }
@@ -321,6 +370,23 @@ impl<'src> Compiler<'src> {
             TokenType::Minus => self.emit_op(OpCode::Subtract),
             TokenType::Star => self.emit_op(OpCode::Multiply),
             TokenType::Slash => self.emit_op(OpCode::Divide),
+            // Chapter 18: `!=`, `<=`, `>=` synthesised from `==`/`<`/`>`
+            // plus `OP_NOT`, exactly mirroring clox.
+            TokenType::EqualEqual => self.emit_op(OpCode::Equal),
+            TokenType::BangEqual => {
+                self.emit_op(OpCode::Equal);
+                self.emit_op(OpCode::Not);
+            }
+            TokenType::Greater => self.emit_op(OpCode::Greater),
+            TokenType::GreaterEqual => {
+                self.emit_op(OpCode::Less);
+                self.emit_op(OpCode::Not);
+            }
+            TokenType::Less => self.emit_op(OpCode::Less),
+            TokenType::LessEqual => {
+                self.emit_op(OpCode::Greater);
+                self.emit_op(OpCode::Not);
+            }
             other => unreachable!("Pratt rule for {other:?} dispatched to binary"),
         }
     }
@@ -470,5 +536,117 @@ mod tests {
             "expected at most 2 errors with panic-mode suppression, got {}: {errs:?}",
             errs.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod chapter_18_tests {
+    //! Chapter 18 — Types of Values: literals, comparisons, type errors.
+
+    use super::*;
+    use crate::vm::{Vm, VmError};
+
+    fn eval(src: &str) -> Value {
+        let chunk = compile(src).expect("compile clean");
+        Vm::new().interpret(&chunk).expect("runs clean")
+    }
+
+    fn eval_err(src: &str) -> VmError {
+        let chunk = compile(src).expect("compile clean");
+        Vm::new()
+            .interpret(&chunk)
+            .expect_err("expected runtime error")
+    }
+
+    #[test]
+    fn nil_true_false_literals_evaluate() {
+        assert_eq!(eval("nil"), Value::Nil);
+        assert_eq!(eval("true"), Value::Bool(true));
+        assert_eq!(eval("false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn logical_not_uses_lox_truthiness() {
+        // Only nil and false are falsy.
+        assert_eq!(eval("!nil"), Value::Bool(true));
+        assert_eq!(eval("!false"), Value::Bool(true));
+        assert_eq!(eval("!true"), Value::Bool(false));
+        assert_eq!(eval("!0"), Value::Bool(false)); // 0 is truthy
+        assert_eq!(eval("!!nil"), Value::Bool(false));
+    }
+
+    #[test]
+    fn equality_is_polymorphic() {
+        assert_eq!(eval("1 == 1"), Value::Bool(true));
+        assert_eq!(eval("1 == 2"), Value::Bool(false));
+        assert_eq!(eval("nil == nil"), Value::Bool(true));
+        assert_eq!(eval("true == true"), Value::Bool(true));
+        // Mixed types are unequal rather than raising — clox semantics.
+        assert_eq!(eval("1 == true"), Value::Bool(false));
+        assert_eq!(eval("nil == false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn bang_equal_synthesizes_via_equal_plus_not() {
+        assert_eq!(eval("1 != 2"), Value::Bool(true));
+        assert_eq!(eval("1 != 1"), Value::Bool(false));
+        assert_eq!(eval("nil != true"), Value::Bool(true));
+    }
+
+    #[test]
+    fn comparison_operators_on_numbers() {
+        assert_eq!(eval("1 < 2"), Value::Bool(true));
+        assert_eq!(eval("2 < 1"), Value::Bool(false));
+        assert_eq!(eval("1 > 2"), Value::Bool(false));
+        assert_eq!(eval("3 > 1"), Value::Bool(true));
+        // <= and >= synthesise via the *opposite* op + OP_NOT.
+        assert_eq!(eval("2 <= 2"), Value::Bool(true));
+        assert_eq!(eval("2 <= 1"), Value::Bool(false));
+        assert_eq!(eval("2 >= 2"), Value::Bool(true));
+        assert_eq!(eval("1 >= 2"), Value::Bool(false));
+    }
+
+    #[test]
+    fn precedence_equality_below_comparison_below_term() {
+        // `1 + 2 < 4 == false` should parse as `((1 + 2) < 4) == false`,
+        // i.e. `(3 < 4) == false` ⇒ `true == false` ⇒ false.
+        assert_eq!(eval("1 + 2 < 4 == false"), Value::Bool(false));
+    }
+
+    #[test]
+    fn negate_non_number_is_runtime_error_with_line() {
+        let err = eval_err("-true");
+        let VmError::Runtime { line, message } = err;
+        assert_eq!(message, "Operand must be a number.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn arithmetic_on_non_numbers_is_runtime_error() {
+        let VmError::Runtime { message, .. } = eval_err("1 + nil");
+        assert_eq!(message, "Operands must be numbers.");
+    }
+
+    #[test]
+    fn comparison_on_non_numbers_is_runtime_error() {
+        let VmError::Runtime { message, .. } = eval_err("nil < 1");
+        assert_eq!(message, "Operands must be numbers.");
+    }
+
+    #[test]
+    fn equality_does_not_raise_for_mixed_types() {
+        // `==` is polymorphic: mixed types compare unequal rather than
+        // raising. Same for `!=`.
+        assert_eq!(eval("nil == 1"), Value::Bool(false));
+        assert_eq!(eval("true != 1"), Value::Bool(true));
+    }
+
+    #[test]
+    fn runtime_error_line_attribution_is_correct() {
+        // The `+` is on line 3, so the error's line should be 3.
+        let chunk = compile("1\n + \nnil").expect("compile clean");
+        let VmError::Runtime { line, message } = Vm::new().interpret(&chunk).expect_err("rt err");
+        assert_eq!(message, "Operands must be numbers.");
+        assert_eq!(line, 3);
     }
 }

@@ -48,15 +48,12 @@ use std::io::Write;
 pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
     let chunk = compile(source)?;
     let mut vm = Vm::new();
-    let value = vm.interpret(&chunk).map_err(|e| {
-        vec![LoxError::Runtime {
-            line: 0,
-            message: e.to_string(),
-        }]
-    })?;
-    // Chapter 17 renders the expression's value the same way clox's
-    // `printValue` does: just the number, terminated with a newline so
-    // line-oriented REPL clients see one result per line.
+    let value = vm.interpret(&chunk).map_err(|e| vec![vm_to_lox(e)])?;
+    // Chapter 17+ renders the expression's value the same way clox's
+    // `printValue` does (whole numbers as `42`, fractions natural,
+    // booleans as `true`/`false`, the singleton as `nil`), terminated
+    // with a newline so line-oriented REPL clients see one result per
+    // line.
     writeln!(out, "{value}").map_err(|e| {
         vec![LoxError::Runtime {
             line: 0,
@@ -64,4 +61,15 @@ pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<
         }]
     })?;
     Ok(())
+}
+
+/// Translate a [`VmError`] into the workspace-wide [`LoxError`] surface
+/// that both interpreter backends share. Runtime-error variants
+/// preserve the originating source line so the umbrella binary's exit
+/// reporting (`<message>\n[line N]`) lines up with the tree-walk's
+/// output for the same condition.
+fn vm_to_lox(err: vm::VmError) -> LoxError {
+    match err {
+        vm::VmError::Runtime { line, message } => LoxError::Runtime { line, message },
+    }
 }
