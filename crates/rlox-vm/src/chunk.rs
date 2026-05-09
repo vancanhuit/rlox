@@ -31,9 +31,22 @@ use crate::value::Value;
 pub enum OpCode {
     /// `OP_CONSTANT <idx>` — push `chunk.constants[idx]` onto the stack.
     Constant = 0x01,
+    /// `OP_NEGATE` — pop the top of the stack, push `-value`.
+    Negate = 0x02,
+    /// `OP_ADD` — pop `b`, pop `a`, push `a + b`.
+    Add = 0x03,
+    /// `OP_SUBTRACT` — pop `b`, pop `a`, push `a - b`.
+    Subtract = 0x04,
+    /// `OP_MULTIPLY` — pop `b`, pop `a`, push `a * b`.
+    Multiply = 0x05,
+    /// `OP_DIVIDE` — pop `b`, pop `a`, push `a / b` (IEEE-754 division;
+    /// `1.0 / 0.0 == inf`, `0.0 / 0.0 == NaN`, both matching clox).
+    Divide = 0x06,
     /// `OP_RETURN` — return from the current function (or end the
-    /// top-level program in chapter 14, which has no functions yet).
-    Return = 0x02,
+    /// top-level program in chapter 15, which has no functions yet).
+    /// In our implementation [`crate::vm::Vm::interpret`] returns the
+    /// top of the stack as the program's value.
+    Return = 0x07,
 }
 
 impl OpCode {
@@ -44,7 +57,12 @@ impl OpCode {
     pub const fn from_byte(b: u8) -> Option<Self> {
         match b {
             0x01 => Some(Self::Constant),
-            0x02 => Some(Self::Return),
+            0x02 => Some(Self::Negate),
+            0x03 => Some(Self::Add),
+            0x04 => Some(Self::Subtract),
+            0x05 => Some(Self::Multiply),
+            0x06 => Some(Self::Divide),
+            0x07 => Some(Self::Return),
             _ => None,
         }
     }
@@ -54,6 +72,11 @@ impl OpCode {
     pub const fn mnemonic(self) -> &'static str {
         match self {
             Self::Constant => "OP_CONSTANT",
+            Self::Negate => "OP_NEGATE",
+            Self::Add => "OP_ADD",
+            Self::Subtract => "OP_SUBTRACT",
+            Self::Multiply => "OP_MULTIPLY",
+            Self::Divide => "OP_DIVIDE",
             Self::Return => "OP_RETURN",
         }
     }
