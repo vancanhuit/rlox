@@ -1,8 +1,18 @@
 //! Lexical scanner for the Lox language.
 //!
 //! Walks a source string and produces a [`Token`] stream. Lexical errors are
-//! collected (jlox-style) so callers see every problem in one pass; the EOF
-//! token is always appended at the tail.
+//! interleaved with tokens in source order; the EOF token is always emitted
+//! last.
+//!
+//! Two public entry points share one underlying state machine:
+//!
+//! - [`scan`] (eager, jlox-style) — consumes the whole source up front and
+//!   returns `(Vec<Token>, Vec<LoxError>)`. Used by `rlox-tree`'s bulk-parse
+//!   front end and by the test corpus.
+//! - [`Scanner`] (lazy, clox-style chapter 16) — implements
+//!   `Iterator<Item = Result<Token, LoxError>>` and only advances when the
+//!   consumer (e.g. the chapter 17 single-pass Pratt compiler) asks for the
+//!   next token.
 //!
 //! Lox source is treated as bytes for the purposes of scanning: every token
 //! delimiter and every grammar character is ASCII, so byte-indexed slicing
@@ -15,6 +25,11 @@ use std::sync::LazyLock;
 
 use crate::error::LoxError;
 use crate::token::{Literal, Token, TokenType};
+
+/// One unit of scanner output: either a successfully-scanned token or a
+/// lexical error pinned to its source line. Both APIs surface the same
+/// stream; only the framing differs.
+pub type ScanEvent = Result<Token, LoxError>;
 
 static KEYWORDS: LazyLock<HashMap<&'static str, TokenType>> = LazyLock::new(|| {
     [
@@ -42,23 +57,103 @@ static KEYWORDS: LazyLock<HashMap<&'static str, TokenType>> = LazyLock::new(|| {
 /// Scan `source` into tokens, returning any lexical errors alongside.
 ///
 /// The token vector always ends with [`TokenType::Eof`], even when
-/// `errors` is non-empty.
+/// `errors` is non-empty. Internally this is a thin partition over
+/// [`Scanner`]; the eager and lazy paths share one state machine.
 #[must_use]
 pub fn scan(source: &str) -> (Vec<Token>, Vec<LoxError>) {
-    let mut s = State::new(source);
-    while !s.at_end() {
-        s.start = s.current;
-        scan_one(&mut s);
+    let mut tokens = Vec::new();
+    let mut errors = Vec::new();
+    for event in Scanner::new(source) {
+        match event {
+            Ok(t) => tokens.push(t),
+            Err(e) => errors.push(e),
+        }
     }
-    s.push_token(TokenType::Eof, "", None);
-    (s.tokens, s.errors)
+    (tokens, errors)
 }
 
+/// Lazy, chapter-16 streaming scanner.
+///
+/// Implements `Iterator<Item = ScanEvent>` so a downstream consumer
+/// (e.g. `rlox-vm`'s single-pass Pratt compiler) can pull one token at
+/// a time. Source-order is preserved: an error is yielded *exactly* at
+/// the point it would have been recorded by the eager scanner.
+///
+/// The iterator yields exactly one [`TokenType::Eof`] token after the
+/// last lexeme and then returns `None`.
+#[derive(Debug)]
+pub struct Scanner<'src> {
+    state: State<'src>,
+    /// Number of events already emitted. Each call to [`scan_one`]
+    /// pushes either zero or one event, so a single index suffices.
+    next_idx: usize,
+    /// Whether we've already pushed the EOF token. Once true, the
+    /// iterator emits the final EOF event then transitions to `None`.
+    eof_pushed: bool,
+}
+
+impl<'src> Scanner<'src> {
+    /// Build a fresh scanner over `source`. Tokens are pulled lazily
+    /// via the [`Iterator`] impl.
+    #[must_use]
+    pub fn new(source: &'src str) -> Self {
+        Self {
+            state: State::new(source),
+            next_idx: 0,
+            eof_pushed: false,
+        }
+    }
+
+    /// Source line currently being scanned. Useful for error
+    /// diagnostics in callers that want to attribute their *own*
+    /// failures (e.g. parse errors) to a token's line — though most
+    /// callers will read [`Token::line`] directly.
+    #[must_use]
+    pub const fn line(&self) -> usize {
+        self.state.line
+    }
+}
+
+impl Iterator for Scanner<'_> {
+    type Item = ScanEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            // Drain any event already produced by an earlier scan_one
+            // call (which we'll trigger below if the buffer is empty).
+            if self.next_idx < self.state.events.len() {
+                let event = self.state.events[self.next_idx].clone();
+                self.next_idx += 1;
+                return Some(event);
+            }
+
+            if self.state.at_end() {
+                if self.eof_pushed {
+                    return None;
+                }
+                self.eof_pushed = true;
+                self.state.push_token(TokenType::Eof, "", None);
+                continue; // drain the freshly-pushed EOF
+            }
+
+            // Advance one step. scan_one pushes at most one event
+            // (whitespace and comments push zero); the loop continues
+            // until something concrete is produced or we hit EOF.
+            self.state.start = self.state.current;
+            scan_one(&mut self.state);
+        }
+    }
+}
+
+#[derive(Debug)]
 struct State<'src> {
     src: &'src str,
     bytes: &'src [u8],
-    tokens: Vec<Token>,
-    errors: Vec<LoxError>,
+    /// One ordered stream of scanner output, interleaving tokens and
+    /// errors at the source position they were detected. The eager
+    /// [`scan`] partitions this into two `Vec`s; the lazy [`Scanner`]
+    /// drains it incrementally.
+    events: Vec<ScanEvent>,
     start: usize,
     current: usize,
     line: usize,
@@ -69,8 +164,7 @@ impl<'src> State<'src> {
         Self {
             src,
             bytes: src.as_bytes(),
-            tokens: Vec::new(),
-            errors: Vec::new(),
+            events: Vec::new(),
             start: 0,
             current: 0,
             line: 1,
@@ -114,12 +208,12 @@ impl<'src> State<'src> {
         lexeme: impl Into<String>,
         literal: Option<Literal>,
     ) {
-        self.tokens
-            .push(Token::new(ttype, lexeme, literal, self.line));
+        self.events
+            .push(Ok(Token::new(ttype, lexeme, literal, self.line)));
     }
 
     fn record_error(&mut self, message: &str) {
-        self.errors.push(LoxError::scan(self.line, message));
+        self.events.push(Err(LoxError::scan(self.line, message)));
     }
 }
 
