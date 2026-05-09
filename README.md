@@ -3,17 +3,34 @@
 [![CI](https://github.com/vancanhuit/rlox/actions/workflows/ci.yaml/badge.svg)](https://github.com/vancanhuit/rlox/actions/workflows/ci.yaml)
 [![codecov](https://codecov.io/gh/vancanhuit/rlox/graph/badge.svg)](https://codecov.io/gh/vancanhuit/rlox)
 
-A Rust port of the tree-walk Lox interpreter from
-[*Crafting Interpreters*](https://craftinginterpreters.com/a-tree-walk-interpreter.html)
-— written primarily as a vehicle for learning idiomatic Rust (edition 2024,
+A Rust port of [*Crafting Interpreters*](https://craftinginterpreters.com/) —
+written primarily as a vehicle for learning idiomatic Rust (edition 2024,
 let-chains, `LazyLock`, hand-rolled error types, Pratt parsing, idiomatic
 enum-driven AST instead of the book's Visitor pattern).
 
 ## Status
 
-**Milestones 1 and 2 complete** — the full jlox tree-walk interpreter from
-*Crafting Interpreters* (chapters 4–13). The bytecode VM in Part III of the
-book is out of scope for this port.
+**Milestones 1 + 2 complete; milestone 3 in flight.**
+
+The repo is now a Cargo workspace with three crates and one umbrella binary
+that picks its backend at compile time:
+
+| Crate | Role |
+| --- | --- |
+| [`crates/rlox-tree`](crates/rlox-tree/) | Tree-walk interpreter (jlox port, chapters 4–13). Released as `v0.2.0`. |
+| [`crates/rlox-vm`](crates/rlox-vm/) | Bytecode VM (clox port, chapters 14–30). **In progress.** |
+| [`crates/rlox`](crates/rlox/) | Umbrella binary. Two mutually-exclusive Cargo features (`tree` default, `vm`) select which backend the binary links to. |
+
+```sh
+cargo build                                          # tree-walk binary (default)
+cargo build --no-default-features --features vm      # bytecode VM binary
+cargo install --path crates/rlox \
+    --no-default-features --features vm              # install the VM
+```
+
+The `vm` feature wires up to a working CLI in PR 4 (chapter 17, *Compiling
+Expressions*); earlier VM PRs deliver lower-level pieces (chunks, disassembler,
+stack VM with hand-written bytecode) exercised via `cargo test -p rlox-vm`.
 
 ### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
@@ -39,6 +56,28 @@ book is out of scope for this port.
 | 12    | 12      | Classes, methods, properties, `this`, `init`       | done   |
 | 13    | 13      | Inheritance, `super`                               | done   |
 
+### Milestone 3 — chapters 14–30 (bytecode VM)
+
+| Phase | Chapter | Topic                                                | Status |
+| ----- | ------- | ---------------------------------------------------- | ------ |
+| 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | in progress |
+| 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | pending |
+| 16    | 16      | Scanning on Demand                                   | pending |
+| 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode) | pending |
+| 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons)          | pending |
+| 19    | 19      | Strings (interned via `Heap`)                        | pending |
+| 20    | 20      | Hash tables — *absorbed by `std::HashMap`*           | n/a    |
+| 21    | 21      | Global Variables                                     | pending |
+| 22    | 22      | Local Variables                                      | pending |
+| 23    | 23      | Control flow (`if`/`while`/`for`/`and`/`or`)         | pending |
+| 24    | 24      | Calls and Functions                                  | pending |
+| 25    | 25      | Closures (upvalues)                                  | pending |
+| 26    | 26      | Garbage Collection (safe handle-based mark-sweep)    | pending |
+| 27    | 27      | Classes and Instances                                | pending |
+| 28    | 28      | Methods and Initializers                             | pending |
+| 29    | 29      | Superclasses                                         | pending |
+| 30    | 30      | Optimization (NaN-boxing skipped — `unsafe_code = "forbid"`) | pending |
+
 ## Requirements
 
 - Rust **1.95** (pinned via [`rust-toolchain.toml`](rust-toolchain.toml);
@@ -47,10 +86,17 @@ book is out of scope for this port.
 ## Build, test, lint
 
 ```sh
-cargo build
-cargo test --all-targets --locked
+cargo build                                           # umbrella binary, default features (tree-walk)
+cargo test --workspace --all-targets --locked         # every crate
 cargo fmt --all -- --check
-cargo clippy --all-targets --locked -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
+```
+
+Per-crate iteration (faster builds while working on one backend):
+
+```sh
+cargo test -p rlox-tree         # tree-walk only
+cargo test -p rlox-vm           # bytecode VM only
 ```
 
 ## Run

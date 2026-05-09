@@ -1,0 +1,16 @@
+[package]
+name = "rlox-tree"
+description = "Tree-walk interpreter for the Lox language (jlox port, chapters 4-13)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "rlox_tree"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

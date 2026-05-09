@@ -1,0 +1,16 @@
+[package]
+name = "rlox-vm"
+description = "Bytecode-VM interpreter for the Lox language (clox port, chapters 14-30)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+name = "rlox_vm"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
