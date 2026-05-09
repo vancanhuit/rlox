@@ -169,15 +169,19 @@ fn stringify_other_atoms() {
 // ---- chapter 8: Interpreter (statements, variables, scopes) ----
 
 mod programs {
-    use rlox::{Interpreter, LoxError, parse_program, scan};
+    use rlox::{Interpreter, LoxError, parse_program, resolve, scan};
 
-    /// Run a program and return the captured `print` output.
+    /// Run a program (scan → parse → resolve → interpret) and return
+    /// the captured `print` output. Mirrors the production pipeline used
+    /// by `rlox::run_to`.
     fn run(src: &str) -> Result<String, Vec<LoxError>> {
         let (tokens, scan_errors) = scan(src);
         assert!(scan_errors.is_empty(), "scan errors: {scan_errors:?}");
         let stmts = parse_program(&tokens)?;
+        let locals = resolve(&stmts)?;
         let mut buf = Vec::<u8>::new();
         let mut interp = Interpreter::new(&mut buf);
+        interp.merge_locals(locals);
         interp.interpret(&stmts).map_err(|e| vec![e])?;
         Ok(String::from_utf8(buf).unwrap())
     }
@@ -475,12 +479,15 @@ print x;
     }
 
     #[test]
-    fn return_at_top_level_is_runtime_error() {
-        // Without the chapter-11 resolver this leaks as a runtime error
-        // rather than a parse-time one. Either way, it must not silently
-        // succeed.
+    fn return_at_top_level_is_static_error() {
+        // Chapter 11 (resolver) rejects this statically before the
+        // interpreter runs. The diagnostic surfaces as a Parse-flavoured
+        // `LoxError` carrying the canonical jlox message.
         let errs = run("return 1;").unwrap_err();
-        assert!(matches!(errs[0], LoxError::Runtime { .. }));
+        let LoxError::Parse { message, .. } = &errs[0] else {
+            panic!("expected Parse error, got {:?}", errs[0]);
+        };
+        assert_eq!(message, "Can't return from top-level code.");
     }
 
     #[test]

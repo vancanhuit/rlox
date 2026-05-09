@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use rlox::{Interpreter, LoxError, parse_program, run_to, scan};
+use rlox::{Interpreter, LoxError, parse_program, resolve, run_to, scan};
 
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -112,14 +112,19 @@ fn run_prompt() -> ExitCode {
     }
 }
 
-/// Scan + parse + execute a single REPL line through the long-lived
-/// interpreter, returning every error it produced.
+/// Scan + parse + resolve + execute a single REPL line through the
+/// long-lived interpreter, returning every error it produced. The
+/// resolver runs per line; depths for previously-defined functions stay
+/// alive via `Rc<FunctionDecl>` inside the interpreter's stored
+/// `LoxFunction` values.
 fn repl_step(source: &str, interp: &mut Interpreter<'_>) -> Result<(), Vec<LoxError>> {
     let (tokens, scan_errors) = scan(source);
     if !scan_errors.is_empty() {
         return Err(scan_errors);
     }
     let stmts = parse_program(&tokens)?;
+    let locals = resolve(&stmts)?;
+    interp.merge_locals(locals);
     interp.interpret(&stmts).map_err(|e| vec![e])
 }
 

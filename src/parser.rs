@@ -4,7 +4,9 @@
 //! calls, and `return` (chapter 10). `for` loops are desugared at parse
 //! time into the existing `Block` + `While` nodes.
 
-use crate::ast::{Expr, Stmt};
+use std::rc::Rc;
+
+use crate::ast::{Expr, FunctionDecl, Stmt};
 use crate::error::LoxError;
 use crate::token::{Literal, Token, TokenType};
 use crate::value::Value;
@@ -291,7 +293,7 @@ fn function(p: &mut Pos<'_>, kind: &str) -> Result<Stmt, LoxError> {
         format!("Expect '{{' before {kind} body."),
     )?;
     let body = block(p)?;
-    Ok(Stmt::Function { name, params, body })
+    Ok(Stmt::Function(Rc::new(FunctionDecl { name, params, body })))
 }
 
 fn var_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {

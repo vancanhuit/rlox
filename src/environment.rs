@@ -89,6 +89,47 @@ impl Environment {
         }
     }
 
+    /// Look up a variable at a *specific* lexical depth, computed
+    /// statically by the chapter-11 resolver. `distance == 0` means the
+    /// current scope; each increment walks one parent outward. The
+    /// resolver guarantees the binding exists at that depth, so the
+    /// `expect`s below should never fire on resolved code.
+    #[must_use]
+    pub fn get_at(&self, distance: usize, name: &str) -> Option<Value> {
+        let target = self.ancestor(distance);
+        target.inner.borrow().values.get(name).cloned()
+    }
+
+    /// Assign to a variable at a specific lexical depth (resolver-driven).
+    /// Returns whether a binding was found at that depth; callers fall
+    /// back to a runtime error if not.
+    #[must_use]
+    pub fn assign_at(&self, distance: usize, name: &str, value: Value) -> bool {
+        let target = self.ancestor(distance);
+        let mut scope = target.inner.borrow_mut();
+        if scope.values.contains_key(name) {
+            scope.values.insert(name.to_string(), value);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Walk `distance` parent links and return that environment handle.
+    fn ancestor(&self, distance: usize) -> Environment {
+        let mut env = self.clone();
+        for _ in 0..distance {
+            let parent = env
+                .inner
+                .borrow()
+                .parent
+                .clone()
+                .expect("resolver guaranteed sufficient parent depth");
+            env = parent;
+        }
+        env
+    }
+
     /// Assign to an existing variable; walks outward, never creates a new
     /// binding. Returns the assigned value so callers can use assignment
     /// as an expression.

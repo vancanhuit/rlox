@@ -10,7 +10,9 @@
 //!
 //! The AST `Display` impl produces the same parenthesised, prefix-Lisp form.
 
-use rlox::{Expr, Stmt, Token, TokenType, Value};
+use std::rc::Rc;
+
+use rlox::{Expr, FunctionDecl, Stmt, Token, TokenType, Value};
 
 fn op(ttype: TokenType, lexeme: &'static str) -> Token {
     Token::new(ttype, lexeme, None, 1)
@@ -225,24 +227,24 @@ fn call_expr_display_with_arguments() {
 
 #[test]
 fn function_stmt_display_with_no_params() {
-    let s = Stmt::Function {
+    let s = Stmt::Function(Rc::new(FunctionDecl {
         name: name("greet"),
         params: vec![],
         body: vec![Stmt::Print(Expr::Literal(Value::String("hi".into())))],
-    };
+    }));
     assert_eq!(s.to_string(), "(fun greet () (print hi))");
 }
 
 #[test]
 fn function_stmt_display_with_params_and_body() {
-    let s = Stmt::Function {
+    let s = Stmt::Function(Rc::new(FunctionDecl {
         name: name("add"),
         params: vec![name("a"), name("b")],
         body: vec![Stmt::Return {
             keyword: Token::new(TokenType::Return, "return", None, 1),
             value: Some(Expr::Variable(name("a"))),
         }],
-    };
+    }));
     assert_eq!(s.to_string(), "(fun add (a b) (return a))");
 }
 

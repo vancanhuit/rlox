@@ -17,9 +17,10 @@ use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::ast::{Expr, Stmt};
-use crate::callable::{Callable, FunctionDecl, LoxFunction, NativeFn};
+use crate::callable::{Callable, LoxFunction, NativeFn};
 use crate::environment::Environment;
 use crate::error::LoxError;
+use crate::resolver::{Locals, lookup_key};
 use crate::token::{Token, TokenType};
 use crate::value::Value;
 
@@ -204,14 +205,17 @@ pub fn stringify(value: &Value) -> String {
 /// drive with [`Interpreter::interpret`].
 pub struct Interpreter<'w> {
     /// Always-reachable global scope. Native functions live here; user
-    /// `fun` declarations at the top level land here too. Currently unread
-    /// at runtime because the parent-pointer chain already terminates at
-    /// the globals — chapter 11 (resolver) will use this directly.
-    #[allow(dead_code)]
+    /// `fun` declarations at the top level land here too. Used directly
+    /// (not via the parent chain) when a variable isn't in the
+    /// resolver-supplied [`Locals`] map — i.e. for globals.
     globals: Environment,
     /// The currently-active scope. Equal to `globals` outside any block /
     /// function call; otherwise a child of some ancestor scope.
     env: Environment,
+    /// Resolver-supplied lexical-depth map: `Expr` address → number of
+    /// scopes between the reference and its declaring scope. A miss
+    /// means "global" — fall back to [`Self::globals`].
+    locals: Locals,
     out: &'w mut dyn Write,
 }
 
@@ -222,7 +226,12 @@ impl<'w> Interpreter<'w> {
         let globals = Environment::new();
         register_natives(&globals);
         let env = globals.clone();
-        Self { globals, env, out }
+        Self {
+            globals,
+            env,
+            locals: Locals::new(),
+            out,
+        }
     }
 
     /// Construct an interpreter with externally supplied globals (used by
@@ -230,7 +239,21 @@ impl<'w> Interpreter<'w> {
     /// evaluation).
     fn with_environment(out: &'w mut dyn Write, env: Environment) -> Self {
         let globals = env.clone();
-        Self { globals, env, out }
+        Self {
+            globals,
+            env,
+            locals: Locals::new(),
+            out,
+        }
+    }
+
+    /// Merge a resolver-produced [`Locals`] map into this interpreter.
+    /// REPL drivers call this once per line so previously-resolved
+    /// function bodies (alive via `Rc<FunctionDecl>` inside `LoxFunction`
+    /// values) keep their depth entries while new statements get fresh
+    /// ones.
+    pub fn merge_locals(&mut self, locals: Locals) {
+        self.locals.extend(locals);
     }
 
     /// Run a program (slice of statements), short-circuiting on the first
@@ -289,21 +312,19 @@ impl<'w> Interpreter<'w> {
                 }
                 Ok(())
             }
-            Stmt::Function { name, params, body } => {
-                let decl = Rc::new(FunctionDecl {
-                    name: name.clone(),
-                    params: params.clone(),
-                    body: body.clone(),
-                });
+            Stmt::Function(decl) => {
+                // Share the AST `Rc<FunctionDecl>` directly with the
+                // runtime function value — no body clone, so resolver-
+                // recorded `Expr` addresses inside `body` stay valid.
                 let func = LoxFunction {
-                    decl,
+                    decl: Rc::clone(decl),
                     // Capture the environment in effect at *declaration*
                     // time — closures see surrounding bindings even
                     // after the declaring scope exits.
                     closure: self.env.clone(),
                 };
                 self.env.define(
-                    name.lexeme.clone(),
+                    decl.name.lexeme.clone(),
                     Value::Callable(Callable::Function(Rc::new(func))),
                 );
                 Ok(())
@@ -341,10 +362,10 @@ impl<'w> Interpreter<'w> {
                 let r = self.eval(right)?;
                 Ok(eval_binary(op, l, r)?)
             }
-            Expr::Variable(name) => Ok(self.env.get(name)?),
+            Expr::Variable(name) => Ok(self.lookup_variable(expr, name)?),
             Expr::Assign { name, value } => {
                 let v = self.eval(value)?;
-                Ok(self.env.assign(name, v)?)
+                Ok(self.assign_variable(expr, name, v)?)
             }
             Expr::Logical { left, op, right } => {
                 let l = self.eval(left)?;
@@ -388,6 +409,35 @@ impl<'w> Interpreter<'w> {
         match callable {
             Callable::Native(n) => Ok((n.func)(&args)?),
             Callable::Function(f) => self.call_function(f, args),
+        }
+    }
+
+    /// Resolve `expr` (a variable read) by consulting the resolver's
+    /// [`Locals`] map first; on a miss, fall through to the global scope.
+    fn lookup_variable(&self, expr: &Expr, name: &Token) -> Result<Value, LoxError> {
+        if let Some(&distance) = self.locals.get(&lookup_key(expr)) {
+            self.env.get_at(distance, &name.lexeme).ok_or_else(|| {
+                LoxError::runtime(name, format!("Undefined variable '{}'.", name.lexeme))
+            })
+        } else {
+            self.globals.get(name)
+        }
+    }
+
+    /// Resolver-aware assignment counterpart of [`Self::lookup_variable`].
+    /// Returns the assigned value on success.
+    fn assign_variable(&self, expr: &Expr, name: &Token, value: Value) -> Result<Value, LoxError> {
+        if let Some(&distance) = self.locals.get(&lookup_key(expr)) {
+            if self.env.assign_at(distance, &name.lexeme, value.clone()) {
+                Ok(value)
+            } else {
+                Err(LoxError::runtime(
+                    name,
+                    format!("Undefined variable '{}'.", name.lexeme),
+                ))
+            }
+        } else {
+            self.globals.assign(name, value)
         }
     }
 
