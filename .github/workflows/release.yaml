@@ -1,0 +1,137 @@
+# Release pipeline.
+#
+# Triggered by pushing a semver tag of the form `v1.2.3` or `v1.2.3-beta1`.
+# Builds the rlox binary for both linux/amd64 and linux/arm64 on native
+# runners (no cross-compilation), packages each as a tarball with a
+# per-archive sha256, then aggregates everything into a single GitHub
+# Release whose body is rendered by git-cliff from the (prev_tag, this_tag]
+# range.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+" # v1.2.3
+      - "v[0-9]+.[0-9]+.[0-9]+-*" # v1.2.3-beta1, v1.2.3-rc.1, ...
+
+permissions:
+  contents: read
+
+# Two concurrent runs for the same tag would race on the GH Release create +
+# asset upload. Different tags are independent.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            # Native ARM64 runner — free for public repos. Avoids the
+            # cross-toolchain dance that `cargo build --target` on x86_64
+            # would otherwise require for a glibc-linked binary.
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        # `rust-toolchain.toml` pins the channel + components; the host
+        # target is added automatically by rustup on the matching runner.
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Per-target cache so the two matrix legs don't thrash.
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin rlox
+
+      - name: Package binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archive="rlox_${GITHUB_REF_NAME}_${TARGET}.tar.gz"
+          stage="dist/rlox_${GITHUB_REF_NAME}_${TARGET}"
+          mkdir -p "$stage"
+          cp target/release/rlox "$stage/rlox"
+          cp README.md LICENSE "$stage/" 2>/dev/null || true
+          tar -czf "dist/$archive" -C dist "$(basename "$stage")"
+          rm -rf "$stage"
+          ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlox-${{ matrix.target }}
+          path: |
+            dist/rlox_*.tar.gz
+            dist/rlox_*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v6
+        with:
+          # git-cliff walks the tag graph for the (prev_tag, this_tag]
+          # range; it needs the entire history.
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Aggregate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          # Produce a single SHA256SUMS that lists every per-arch tarball.
+          sha256sum *.tar.gz > SHA256SUMS
+          ls -la
+
+      - name: Generate release notes
+        # `--current` resolves the previous semver tag from git's tag
+        # graph automatically. Output is written to dist/CHANGELOG.md
+        # via the action's $OUTPUT env contract.
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --current
+        env:
+          OUTPUT: dist/CHANGELOG.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: dist/CHANGELOG.md
+          # The leading `-` in the tag (e.g. v1.2.3-beta1) marks it as
+          # a prerelease per semver; Releases-page UX hides these from
+          # "Latest release".
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/rlox_*.tar.gz
+            dist/rlox_*.tar.gz.sha256
+            dist/SHA256SUMS
