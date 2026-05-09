@@ -261,3 +261,55 @@ fn return_stmt_display_with_and_without_value() {
     assert_eq!(bare.to_string(), "(return)");
     assert_eq!(valued.to_string(), "(return 1.0)");
 }
+
+// ---- chapter 12: Class / Get / Set / This display ----
+
+#[test]
+fn get_expr_display() {
+    let e = Expr::Get {
+        object: Box::new(Expr::Variable(name("a"))),
+        name: name("b"),
+    };
+    assert_eq!(e.to_string(), "(. a b)");
+}
+
+#[test]
+fn set_expr_display() {
+    let e = Expr::Set {
+        object: Box::new(Expr::Variable(name("a"))),
+        name: name("b"),
+        value: Box::new(n(1.0)),
+    };
+    assert_eq!(e.to_string(), "(.= a b 1.0)");
+}
+
+#[test]
+fn this_expr_display() {
+    let e = Expr::This(Token::new(TokenType::This, "this", None, 1));
+    assert_eq!(e.to_string(), "this");
+}
+
+#[test]
+fn empty_class_stmt_display() {
+    let s = Stmt::Class {
+        name: name("Foo"),
+        methods: vec![],
+    };
+    assert_eq!(s.to_string(), "(class Foo)");
+}
+
+#[test]
+fn class_stmt_display_with_methods() {
+    let s = Stmt::Class {
+        name: name("Greeter"),
+        methods: vec![Rc::new(FunctionDecl {
+            name: name("greet"),
+            params: vec![],
+            body: vec![Stmt::Print(Expr::Literal(Value::String("hi".into())))],
+        })],
+    };
+    assert_eq!(
+        s.to_string(),
+        "(class Greeter (method greet () (print hi)))"
+    );
+}

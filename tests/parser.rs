@@ -454,3 +454,84 @@ fn parses_return_with_value() {
     let stmts = program_str("fun f() { return 42; }").unwrap();
     assert_eq!(stmts[0].to_string(), "(fun f () (return 42.0))");
 }
+
+// ---- chapter 12: classes, methods, properties, this ----
+
+#[test]
+fn parses_empty_class_declaration() {
+    let stmts = program_str("class Foo {}").unwrap();
+    assert_eq!(stmts[0].to_string(), "(class Foo)");
+}
+
+#[test]
+fn parses_class_with_methods() {
+    let stmts =
+        program_str("class Greeter { greet() { print \"hi\"; } shout(msg) { print msg; } }")
+            .unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(class Greeter (method greet () (print hi)) (method shout (msg) (print msg)))"
+    );
+}
+
+#[test]
+fn class_requires_name() {
+    let errs = program_str("class {}").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect class name."
+    )));
+}
+
+#[test]
+fn class_requires_open_brace() {
+    let errs = program_str("class Foo").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '{' before class body."
+    )));
+}
+
+#[test]
+fn parses_property_get() {
+    let stmts = program_str("a.b;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (. a b))");
+}
+
+#[test]
+fn parses_property_set() {
+    let stmts = program_str("a.b = 1;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (.= a b 1.0))");
+}
+
+#[test]
+fn parses_chained_property_access() {
+    // `a.b.c` ⇒ (. (. a b) c)
+    let stmts = program_str("a.b.c;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (. (. a b) c))");
+}
+
+#[test]
+fn parses_property_call_then_property() {
+    // `a.b().c` ⇒ (. (call (. a b)) c)
+    let stmts = program_str("a.b().c;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (. (call (. a b)) c))");
+}
+
+#[test]
+fn parses_this_keyword() {
+    let stmts = program_str("class C { m() { return this; } }").unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(class C (method m () (return this)))"
+    );
+}
+
+#[test]
+fn dot_requires_property_name() {
+    let errs = program_str("a.;").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect property name after '.'."
+    )));
+}

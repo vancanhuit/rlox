@@ -8,19 +8,37 @@
 //! strips the trailing `.0`).
 
 use std::fmt;
+use std::rc::Rc;
 
-use crate::callable::Callable;
+use crate::callable::{Callable, LoxInstance};
 
 /// A Lox value: produced by literal expressions and by the interpreter.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Nil,
     Bool(bool),
     Number(f64),
     String(String),
-    /// A callable function (chapter 10): either a built-in native or a
-    /// user-defined `LoxFunction` carrying its captured environment.
+    /// A callable function or class (chapter 10/12).
     Callable(Callable),
+    /// A live class instance (chapter 12). Identity-based equality via
+    /// `Rc::ptr_eq` matches jlox's behaviour for instance comparisons.
+    Instance(Rc<LoxInstance>),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Nil, Self::Nil) => true,
+            (Self::Bool(a), Self::Bool(b)) => a == b,
+            #[allow(clippy::float_cmp)]
+            (Self::Number(a), Self::Number(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Callable(a), Self::Callable(b)) => a == b,
+            (Self::Instance(a), Self::Instance(b)) => Rc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Value {
@@ -40,6 +58,8 @@ impl fmt::Display for Value {
             Self::Callable(Callable::Function(func)) => {
                 write!(f, "<fn {}>", func.decl.name.lexeme)
             }
+            Self::Callable(Callable::Class(c)) => write!(f, "<class {}>", c.name),
+            Self::Instance(inst) => write!(f, "{} instance", inst.class.name),
         }
     }
 }

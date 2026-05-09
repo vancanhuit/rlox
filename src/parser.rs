@@ -109,6 +109,11 @@ fn parse_atom(p: &mut Pos<'_>) -> Result<Expr, LoxError> {
             p.bump();
             return Ok(Expr::Variable(name));
         }
+        TokenType::This => {
+            let keyword = tok.clone();
+            p.bump();
+            return Ok(Expr::This(keyword));
+        }
         TokenType::LeftParen => {
             p.bump();
             let inner = assignment(p)?;
@@ -147,6 +152,22 @@ fn parse_bp(p: &mut Pos<'_>, min_bp: Bp) -> Result<Expr, LoxError> {
                 callee: Box::new(lhs),
                 paren,
                 arguments,
+            };
+            continue;
+        }
+
+        // Postfix property access: `expr.name`. Same precedence as call,
+        // so chained property/call combinations like `obj.a().b` parse
+        // left-to-right without further plumbing.
+        if p.eat(TokenType::Dot) {
+            if !p.check(TokenType::Identifier) {
+                return Err(LoxError::parse(p.head(), "Expect property name after '.'."));
+            }
+            let name = p.head().clone();
+            p.bump();
+            lhs = Expr::Get {
+                object: Box::new(lhs),
+                name,
             };
             continue;
         }
@@ -220,6 +241,13 @@ fn assignment(p: &mut Pos<'_>) -> Result<Expr, LoxError> {
                 name,
                 value: Box::new(value),
             }),
+            // `obj.field = value` reuses the parsed `Get` expression's
+            // pieces and re-bundles them as a `Set` (chapter 12).
+            Expr::Get { object, name } => Ok(Expr::Set {
+                object,
+                name,
+                value: Box::new(value),
+            }),
             _ => Err(LoxError::parse(&equals, "Invalid assignment target.")),
         };
     }
@@ -245,6 +273,9 @@ pub fn parse(tokens: &[Token]) -> Result<Expr, LoxError> {
 // --- statements (chapter 8) ---
 
 fn declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    if p.eat(TokenType::Class) {
+        return class_declaration(p);
+    }
     if p.eat(TokenType::Fun) {
         return function(p, "function");
     }
@@ -254,9 +285,36 @@ fn declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
     statement(p)
 }
 
-/// Parse a function declaration. `kind` is "function" for top-level
-/// `fun` declarations; chapter 12 will reuse this with kind = "method".
+/// Parse a `class Name { method... }` declaration. Each method is
+/// produced by [`function_decl`] with kind `"method"` so error messages
+/// say `Expect method name.` instead of `Expect function name.`.
+fn class_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    if !p.check(TokenType::Identifier) {
+        return Err(LoxError::parse(p.head(), "Expect class name."));
+    }
+    let name = p.head().clone();
+    p.bump();
+    expect(p, TokenType::LeftBrace, "Expect '{' before class body.")?;
+    let mut methods: Vec<Rc<FunctionDecl>> = Vec::new();
+    while !p.check(TokenType::RightBrace) && !p.eof() {
+        methods.push(function_decl(p, "method")?);
+    }
+    expect(p, TokenType::RightBrace, "Expect '}' after class body.")?;
+    Ok(Stmt::Class { name, methods })
+}
+
+/// Parse a function declaration as a top-level [`Stmt::Function`]. Used
+/// by the chapter-10 `fun` keyword path; chapter 12's class methods go
+/// through [`function_decl`] directly so they end up in the class's
+/// method table rather than as standalone statements.
 fn function(p: &mut Pos<'_>, kind: &str) -> Result<Stmt, LoxError> {
+    Ok(Stmt::Function(function_decl(p, kind)?))
+}
+
+/// Parse a function/method declaration into a shared [`FunctionDecl`].
+/// `kind` is one of `"function"` or `"method"` and shows up in error
+/// messages.
+fn function_decl(p: &mut Pos<'_>, kind: &str) -> Result<Rc<FunctionDecl>, LoxError> {
     if !p.check(TokenType::Identifier) {
         return Err(LoxError::parse(p.head(), format!("Expect {kind} name.")));
     }
@@ -293,7 +351,7 @@ fn function(p: &mut Pos<'_>, kind: &str) -> Result<Stmt, LoxError> {
         format!("Expect '{{' before {kind} body."),
     )?;
     let body = block(p)?;
-    Ok(Stmt::Function(Rc::new(FunctionDecl { name, params, body })))
+    Ok(Rc::new(FunctionDecl { name, params, body }))
 }
 
 fn var_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {

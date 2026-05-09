@@ -33,6 +33,20 @@ pub type Locals = HashMap<usize, usize>;
 enum FunctionKind {
     None,
     Function,
+    /// A method on a class (chapter 12). Distinguished from `Function`
+    /// so the resolver can adjust diagnostics if needed; not currently
+    /// used to gate behaviour, but keeps the surface aligned with the
+    /// book.
+    Method,
+    /// A class's `init` method. `Stmt::Return` with a value is rejected
+    /// statically here.
+    Initializer,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassKind {
+    None,
+    Class,
 }
 
 /// Compute the address-keyed depth used by the interpreter. The cast
@@ -68,6 +82,7 @@ struct Resolver {
     scopes: Vec<HashMap<String, bool>>,
     locals: Locals,
     current_function: FunctionKind,
+    current_class: ClassKind,
     errors: Vec<LoxError>,
 }
 
@@ -77,6 +92,7 @@ impl Resolver {
             scopes: Vec::new(),
             locals: HashMap::new(),
             current_function: FunctionKind::None,
+            current_class: ClassKind::None,
             errors: Vec::new(),
         }
     }
@@ -133,8 +149,37 @@ impl Resolver {
                     ));
                 }
                 if let Some(v) = value {
+                    if self.current_function == FunctionKind::Initializer {
+                        self.errors.push(LoxError::parse(
+                            keyword,
+                            "Can't return a value from an initializer.",
+                        ));
+                    }
                     self.resolve_expr(v);
                 }
+            }
+            Stmt::Class { name, methods } => {
+                let enclosing = std::mem::replace(&mut self.current_class, ClassKind::Class);
+                self.declare(name);
+                self.define(name);
+
+                // Open a synthetic scope around the methods that pre-binds
+                // `this` — depth 0 from any method body's perspective.
+                self.begin_scope();
+                if let Some(scope) = self.scopes.last_mut() {
+                    scope.insert("this".to_string(), true);
+                }
+                for method in methods {
+                    let kind = if method.name.lexeme == "init" {
+                        FunctionKind::Initializer
+                    } else {
+                        FunctionKind::Method
+                    };
+                    self.resolve_function(&method.params, &method.body, kind);
+                }
+                self.end_scope();
+
+                self.current_class = enclosing;
             }
         }
     }
@@ -170,6 +215,22 @@ impl Resolver {
             Expr::Assign { name, value } => {
                 self.resolve_expr(value);
                 self.resolve_local(expr, name);
+            }
+            // Properties are dynamic — only the receiver is resolved.
+            Expr::Get { object, .. } => self.resolve_expr(object),
+            Expr::Set { object, value, .. } => {
+                self.resolve_expr(value);
+                self.resolve_expr(object);
+            }
+            Expr::This(keyword) => {
+                if self.current_class == ClassKind::None {
+                    self.errors.push(LoxError::parse(
+                        keyword,
+                        "Can't use 'this' outside of a class.",
+                    ));
+                    return;
+                }
+                self.resolve_local(expr, keyword);
             }
         }
     }

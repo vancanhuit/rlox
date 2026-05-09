@@ -1,7 +1,8 @@
 //! Abstract syntax tree for Lox expressions and statements
 //! (chapters 5–6, extended by chapter 8 with statements + variables,
-//! chapter 9 with control flow + short-circuit logical operators, and
-//! chapter 10 with function declarations, calls, and `return`).
+//! chapter 9 with control flow + short-circuit logical operators,
+//! chapter 10 with function declarations, calls, and `return`, and
+//! chapter 12 with classes, properties, and `this`).
 //!
 //! We use idiomatic Rust enums + `match` rather than the book's Visitor
 //! pattern. The `Display` impls produce a parenthesised, prefix-Lisp form
@@ -61,6 +62,20 @@ pub enum Expr {
         paren: Token,
         arguments: Vec<Expr>,
     },
+    /// `object.name` — property read (chapter 12).
+    Get {
+        object: Box<Expr>,
+        name: Token,
+    },
+    /// `object.name = value` — property write (chapter 12).
+    Set {
+        object: Box<Expr>,
+        name: Token,
+        value: Box<Expr>,
+    },
+    /// `this` keyword (chapter 12). The token carries the line for
+    /// runtime errors and is the resolver's lookup key.
+    This(Token),
 }
 
 impl fmt::Display for Expr {
@@ -84,6 +99,13 @@ impl fmt::Display for Expr {
                 }
                 f.write_str(")")
             }
+            Self::Get { object, name } => write!(f, "(. {object} {})", name.lexeme),
+            Self::Set {
+                object,
+                name,
+                value,
+            } => write!(f, "(.= {object} {} {value})", name.lexeme),
+            Self::This(_) => f.write_str("this"),
         }
     }
 }
@@ -123,6 +145,12 @@ pub enum Stmt {
     /// for runtime errors; `value` is `None` when the bare keyword form
     /// is used (returns `nil`).
     Return { keyword: Token, value: Option<Expr> },
+    /// `class Name { methods... }` (chapter 12). Each method is the
+    /// same `Rc<FunctionDecl>` shape as a top-level `fun` declaration.
+    Class {
+        name: Token,
+        methods: Vec<Rc<FunctionDecl>>,
+    },
 }
 
 impl fmt::Display for Stmt {
@@ -170,6 +198,27 @@ impl fmt::Display for Stmt {
                 Some(v) => write!(f, "(return {v})"),
                 None => f.write_str("(return)"),
             },
+            Self::Class { name, methods } => {
+                f.write_str("(class ")?;
+                f.write_str(&name.lexeme)?;
+                for m in methods {
+                    f.write_str(" (method ")?;
+                    f.write_str(&m.name.lexeme)?;
+                    f.write_str(" (")?;
+                    for (i, p) in m.params.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(" ")?;
+                        }
+                        f.write_str(&p.lexeme)?;
+                    }
+                    f.write_str(")")?;
+                    for s in &m.body {
+                        write!(f, " {s}")?;
+                    }
+                    f.write_str(")")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }

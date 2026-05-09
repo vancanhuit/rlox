@@ -164,3 +164,48 @@ fn run_surfaces_resolver_errors_from_run_to() {
         LoxError::Parse { message, .. } if message == "Can't read local variable in its own initializer."
     )));
 }
+
+// ---- chapter 12: classes / `this` / `init` static checks ----
+
+#[test]
+fn rejects_this_outside_a_class() {
+    let stmts = parse("print this;");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "Can't use 'this' outside of a class.");
+}
+
+#[test]
+fn rejects_this_inside_top_level_function() {
+    // `this` only makes sense inside a method, not a free function.
+    let stmts = parse("fun f() { return this; }");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "Can't use 'this' outside of a class.");
+}
+
+#[test]
+fn allows_this_inside_method_body() {
+    let stmts = parse("class C { m() { return this; } }");
+    resolve(&stmts).expect("`this` inside a method should resolve");
+}
+
+#[test]
+fn rejects_returning_value_from_init() {
+    let stmts = parse("class C { init() { return 1; } }");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "Can't return a value from an initializer.");
+}
+
+#[test]
+fn allows_bare_return_in_init() {
+    let stmts = parse("class C { init() { return; } }");
+    resolve(&stmts).expect("bare `return;` inside init should be accepted");
+}
