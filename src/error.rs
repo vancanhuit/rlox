@@ -12,7 +12,7 @@ use crate::token::{Token, TokenType};
 pub type Result<T> = std::result::Result<T, LoxError>;
 
 /// Errors produced by the scanner, parser, or interpreter.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoxError {
     /// Lexical error (chapter 4). Format: `[line N] Error: <message>`.
     Scan { line: usize, message: String },
@@ -65,7 +65,7 @@ impl LoxError {
 
     /// Source line at which the error was detected.
     #[must_use]
-    pub fn line(&self) -> usize {
+    pub const fn line(&self) -> usize {
         match self {
             Self::Scan { line, .. } | Self::Parse { line, .. } | Self::Runtime { line, .. } => {
                 *line

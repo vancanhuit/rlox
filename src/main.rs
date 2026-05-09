@@ -87,7 +87,12 @@ fn run_prompt() -> ExitCode {
         }
 
         line.clear();
-        match stdin.lock().read_line(&mut line) {
+        // Bind the lock to a temporary that drops at end-of-statement.
+        // Inlining `stdin.lock().read_line(...)` into the match scrutinee
+        // would keep the `StdinLock` alive across every arm (clippy lint
+        // `significant_drop_in_scrutinee`).
+        let read = stdin.lock().read_line(&mut line);
+        match read {
             Ok(0) => {
                 // EOF — print a final newline on stderr for tidy terminals.
                 let _ = writeln!(stderr.lock());

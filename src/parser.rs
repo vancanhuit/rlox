@@ -19,7 +19,7 @@ struct Pos<'t> {
 }
 
 impl<'t> Pos<'t> {
-    fn new(toks: &'t [Token]) -> Self {
+    const fn new(toks: &'t [Token]) -> Self {
         Self { toks, i: 0 }
     }
     fn head(&self) -> &'t Token {
@@ -54,7 +54,7 @@ impl<'t> Pos<'t> {
     }
 }
 
-fn prefix_bp(t: TokenType) -> Option<Bp> {
+const fn prefix_bp(t: TokenType) -> Option<Bp> {
     if matches!(t, TokenType::Bang | TokenType::Minus) {
         // Bumped to 15 to stay above the new factor rung at 11/12.
         Some(15)
@@ -63,7 +63,7 @@ fn prefix_bp(t: TokenType) -> Option<Bp> {
     }
 }
 
-fn infix_bp(t: TokenType) -> Option<(Bp, Bp)> {
+const fn infix_bp(t: TokenType) -> Option<(Bp, Bp)> {
     // Lox precedence, lowest binding to highest. Each rung leaves a gap so
     // the prefix unary at 15 has room to live above the highest infix.
     let pair = match t {

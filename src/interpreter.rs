@@ -58,7 +58,7 @@ fn into_lox_error(e: InterpError) -> LoxError {
 }
 
 /// Lox truthiness: only `nil` and `false` are falsy.
-fn is_truthy(v: &Value) -> bool {
+const fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Nil | Value::Bool(false))
 }
 
@@ -445,18 +445,17 @@ impl<'w> Interpreter<'w> {
                 arguments,
             } => {
                 let callee_value = self.eval(callee)?;
-                let mut args = Vec::with_capacity(arguments.len());
-                for a in arguments {
-                    args.push(self.eval(a)?);
-                }
+                let args: Vec<Value> = arguments
+                    .iter()
+                    .map(|a| self.eval(a))
+                    .collect::<InterpRes<_>>()?;
                 self.call(&callee_value, paren, args)
             }
             Expr::Get { object, name } => {
-                let obj = self.eval(object)?;
-                match obj {
-                    Value::Instance(inst) => Ok(inst.get(name)?),
-                    _ => Err(LoxError::runtime(name, "Only instances have properties.").into()),
-                }
+                let Value::Instance(inst) = self.eval(object)? else {
+                    return Err(LoxError::runtime(name, "Only instances have properties.").into());
+                };
+                Ok(inst.get(name)?)
             }
             Expr::Set {
                 object,
@@ -493,17 +492,16 @@ impl<'w> Interpreter<'w> {
                 else {
                     unreachable!("`this` always resolves to an instance inside a method body");
                 };
-                match super_class.find_method(&method.lexeme) {
-                    Some(m) => {
-                        let bound = m.bind(instance);
-                        Ok(Value::Callable(Callable::Function(bound)))
-                    }
-                    None => Err(LoxError::runtime(
-                        method,
-                        format!("Undefined property '{}'.", method.lexeme),
-                    )
-                    .into()),
-                }
+                let bound = super_class
+                    .find_method(&method.lexeme)
+                    .ok_or_else(|| {
+                        LoxError::runtime(
+                            method,
+                            format!("Undefined property '{}'.", method.lexeme),
+                        )
+                    })?
+                    .bind(instance);
+                Ok(Value::Callable(Callable::Function(bound)))
             }
         }
     }

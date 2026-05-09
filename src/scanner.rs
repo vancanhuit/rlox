@@ -65,7 +65,7 @@ struct State<'src> {
 }
 
 impl<'src> State<'src> {
-    fn new(src: &'src str) -> Self {
+    const fn new(src: &'src str) -> Self {
         Self {
             src,
             bytes: src.as_bytes(),
@@ -77,7 +77,7 @@ impl<'src> State<'src> {
         }
     }
 
-    fn at_end(&self) -> bool {
+    const fn at_end(&self) -> bool {
         self.current >= self.bytes.len()
     }
 
@@ -219,10 +219,10 @@ fn identifier_or_keyword(s: &mut State<'_>) {
     s.push_token(ttype, lexeme, None);
 }
 
-fn is_ident_start(b: u8) -> bool {
+const fn is_ident_start(b: u8) -> bool {
     b.is_ascii_alphabetic() || b == b'_'
 }
 
-fn is_ident_continue(b: u8) -> bool {
+const fn is_ident_continue(b: u8) -> bool {
     is_ident_start(b) || b.is_ascii_digit()
 }
