@@ -5,3 +5,6 @@
 
 pub mod error;
 pub mod token;
+
+pub use error::{LoxError, Result};
+pub use token::{Literal, Token, TokenType};

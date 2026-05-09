@@ -143,10 +143,15 @@ pub struct Token {
 
 impl Token {
     #[must_use]
-    pub fn new(ttype: TokenType, lexeme: String, literal: Option<Literal>, line: usize) -> Self {
+    pub fn new(
+        ttype: TokenType,
+        lexeme: impl Into<String>,
+        literal: Option<Literal>,
+        line: usize,
+    ) -> Self {
         Self {
             ttype,
-            lexeme,
+            lexeme: lexeme.into(),
             literal,
             line,
         }

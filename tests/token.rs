@@ -6,7 +6,7 @@
 //!     DOT . null
 //!     EOF  null
 
-use rlox::token::{Literal, Token, TokenType};
+use rlox::{Literal, Token, TokenType};
 
 #[test]
 fn token_type_display_matches_upstream_dump_format() {
@@ -71,12 +71,7 @@ fn literal_display_matches_book_format() {
 
 #[test]
 fn token_constructor_round_trips_fields() {
-    let tok = Token::new(
-        TokenType::Number,
-        "123".to_string(),
-        Some(Literal::Number(123.0)),
-        7,
-    );
+    let tok = Token::new(TokenType::Number, "123", Some(Literal::Number(123.0)), 7);
     assert_eq!(tok.ttype, TokenType::Number);
     assert_eq!(tok.lexeme, "123");
     assert_eq!(tok.literal, Some(Literal::Number(123.0)));
@@ -87,27 +82,22 @@ fn token_constructor_round_trips_fields() {
 fn token_dump_format_matches_upstream() {
     // From `test/scanning/numbers.lox`:
     //     NUMBER 123 123.0
-    let number_tok = Token::new(
-        TokenType::Number,
-        "123".to_string(),
-        Some(Literal::Number(123.0)),
-        1,
-    );
+    let number_tok = Token::new(TokenType::Number, "123", Some(Literal::Number(123.0)), 1);
     assert_eq!(number_tok.to_string(), "NUMBER 123 123.0");
 
     //     DOT . null
-    let dot_tok = Token::new(TokenType::Dot, ".".to_string(), None, 1);
+    let dot_tok = Token::new(TokenType::Dot, ".", None, 1);
     assert_eq!(dot_tok.to_string(), "DOT . null");
 
     //     EOF  null
     // (note the double space — empty lexeme)
-    let eof_tok = Token::new(TokenType::Eof, String::new(), None, 1);
+    let eof_tok = Token::new(TokenType::Eof, "", None, 1);
     assert_eq!(eof_tok.to_string(), "EOF  null");
 
     //     STRING "hi" hi
     let string_tok = Token::new(
         TokenType::String,
-        "\"hi\"".to_string(),
+        "\"hi\"",
         Some(Literal::String("hi".into())),
         1,
     );

@@ -11,8 +11,7 @@
 
 use std::error::Error;
 
-use rlox::error::LoxError;
-use rlox::token::{Token, TokenType};
+use rlox::{LoxError, Token, TokenType};
 
 #[test]
 fn scan_error_displays_with_line_prefix() {
@@ -22,14 +21,14 @@ fn scan_error_displays_with_line_prefix() {
 
 #[test]
 fn parse_error_at_token_includes_lexeme() {
-    let token = Token::new(TokenType::RightParen, ")".to_string(), None, 5);
+    let token = Token::new(TokenType::RightParen, ")", None, 5);
     let err = LoxError::parse(&token, "Expect expression.");
     assert_eq!(err.to_string(), "[line 5] Error at ')': Expect expression.");
 }
 
 #[test]
 fn parse_error_at_eof_uses_at_end_marker() {
-    let eof = Token::new(TokenType::Eof, String::new(), None, 9);
+    let eof = Token::new(TokenType::Eof, "", None, 9);
     let err = LoxError::parse(&eof, "Expect ';' after value.");
     assert_eq!(
         err.to_string(),
@@ -39,7 +38,7 @@ fn parse_error_at_eof_uses_at_end_marker() {
 
 #[test]
 fn runtime_error_displays_message_then_line_frame() {
-    let plus = Token::new(TokenType::Plus, "+".to_string(), None, 12);
+    let plus = Token::new(TokenType::Plus, "+", None, 12);
     let err = LoxError::runtime(&plus, "Operands must be two numbers or two strings.");
     assert_eq!(
         err.to_string(),
