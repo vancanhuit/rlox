@@ -7,20 +7,23 @@
 //!
 //! Subsequent chapters will add:
 //!
-//! - chapter 15: the [`Vm`] interpreter loop
 //! - chapter 16: scanning on demand
 //! - chapter 17: a single-pass Pratt compiler from source to [`Chunk`]
 //! - chapter 18+: full [`Value`] enum, strings, globals, locals,
 //!   control flow, functions, closures, GC, and classes.
 //!
-//! For now the crate compiles to a library exposing only [`Chunk`],
-//! [`OpCode`], [`Value`], and the [`disassembler`] helpers; the
+//! At chapter 15 the crate exposes [`Chunk`], [`OpCode`], [`Value`], the
+//! [`disassembler`] helpers, and the [`Vm`] interpreter — enough to run
+//! any pure-numeric expression compiled by hand into bytecode. The
 //! end-to-end runner (and the umbrella binary's `--features vm` build)
-//! lights up in PR 4 alongside chapter 17.
+//! lights up in PR 4 alongside chapter 17 once the source-to-bytecode
+//! compiler arrives.
 
 pub mod chunk;
 pub mod disassembler;
 pub mod value;
+pub mod vm;
 
 pub use chunk::{Chunk, OpCode};
 pub use value::Value;
+pub use vm::{Vm, VmError, VmResult};

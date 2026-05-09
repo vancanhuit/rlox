@@ -60,8 +60,8 @@ stack VM with hand-written bytecode) exercised via `cargo test -p rlox-vm`.
 
 | Phase | Chapter | Topic                                                | Status |
 | ----- | ------- | ---------------------------------------------------- | ------ |
-| 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | in progress |
-| 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | pending |
+| 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | done |
+| 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | in progress |
 | 16    | 16      | Scanning on Demand                                   | pending |
 | 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode) | pending |
 | 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons)          | pending |
