@@ -278,3 +278,98 @@ fn program_synchronize_recovers_at_keyword_boundary() {
         LoxError::Parse { message, .. } if message == "Expect variable name."
     )));
 }
+
+// ---- chapter 9: control flow + logical operators ----
+
+#[test]
+fn parses_if_without_else() {
+    let stmts = program_str("if (true) print 1;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(if true (print 1.0))");
+}
+
+#[test]
+fn parses_if_else() {
+    let stmts = program_str("if (true) print 1; else print 2;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(if true (print 1.0) (print 2.0))");
+}
+
+#[test]
+fn dangling_else_binds_to_nearest_if() {
+    // `if (a) if (b) 1; else 2;` ⇒ the `else` belongs to the inner `if`.
+    let stmts = program_str("if (1) if (2) print 3; else print 4;").unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(if 1.0 (if 2.0 (print 3.0) (print 4.0)))"
+    );
+}
+
+#[test]
+fn if_requires_parentheses_around_condition() {
+    let errs = program_str("if true print 1;").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '(' after 'if'."
+    )));
+}
+
+#[test]
+fn parses_while_loop() {
+    let stmts = program_str("while (true) print 1;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(while true (print 1.0))");
+}
+
+#[test]
+fn while_requires_parentheses_around_condition() {
+    let errs = program_str("while true print 1;").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '(' after 'while'."
+    )));
+}
+
+#[test]
+fn parses_logical_and_lower_precedence_than_equality() {
+    // `a == b and c == d` ⇒ (and (== a b) (== c d))
+    let stmts = program_str("a == b and c == d;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (and (== a b) (== c d)))");
+}
+
+#[test]
+fn or_has_lower_precedence_than_and() {
+    // `a or b and c` ⇒ (or a (and b c))
+    let stmts = program_str("a or b and c;").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (or a (and b c)))");
+}
+
+#[test]
+fn for_loop_desugars_to_block_with_while() {
+    // for (var i = 0; i < 3; i = i + 1) print i;
+    // ⇒ (block (var i 0.0) (while (< i 3.0) (block (print i) (; (= i (+ i 1.0))))))
+    let stmts = program_str("for (var i = 0; i < 3; i = i + 1) print i;").unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(block (var i 0.0) \
+         (while (< i 3.0) \
+         (block (print i) (; (= i (+ i 1.0))))))"
+    );
+}
+
+#[test]
+fn for_loop_with_omitted_clauses_defaults_to_true_condition() {
+    // for (;;) ; ⇒ (while true (; nil))
+    // — "; ;" is two empty expression statements: omitted-init/cond/incr,
+    //   so we use a no-op-ish expression statement as the body. Use `;`
+    //   isn't valid Lox; smallest valid body is an empty block `{}`.
+    let stmts = program_str("for (;;) {}").unwrap();
+    assert_eq!(stmts[0].to_string(), "(while true (block))");
+}
+
+#[test]
+fn for_loop_without_initializer_skips_outer_block() {
+    // No init ⇒ no outer Block wrapper.
+    let stmts = program_str("for (; i < 3; i = i + 1) print i;").unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(while (< i 3.0) (block (print i) (; (= i (+ i 1.0)))))"
+    );
+}

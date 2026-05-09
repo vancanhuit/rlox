@@ -159,3 +159,44 @@ fn block_stmt_display_lists_inner_statements() {
     ]);
     assert_eq!(block.to_string(), "(block (var a 1.0) (print a))");
 }
+
+// ---- chapter 9: If / While / Logical display ----
+
+#[test]
+fn logical_expr_displays_with_operator_lexeme() {
+    let or_expr = Expr::Logical {
+        left: Box::new(Expr::Literal(Value::Nil)),
+        op: Token::new(TokenType::Or, "or", None, 1),
+        right: Box::new(Expr::Literal(Value::Bool(true))),
+    };
+    assert_eq!(or_expr.to_string(), "(or nil true)");
+}
+
+#[test]
+fn if_stmt_display_with_and_without_else() {
+    let then_branch = Box::new(Stmt::Print(n(1.0)));
+    let else_branch = Box::new(Stmt::Print(n(2.0)));
+
+    let no_else = Stmt::If {
+        condition: Expr::Literal(Value::Bool(true)),
+        then_branch: then_branch.clone(),
+        else_branch: None,
+    };
+    assert_eq!(no_else.to_string(), "(if true (print 1.0))");
+
+    let with_else = Stmt::If {
+        condition: Expr::Literal(Value::Bool(false)),
+        then_branch,
+        else_branch: Some(else_branch),
+    };
+    assert_eq!(with_else.to_string(), "(if false (print 1.0) (print 2.0))");
+}
+
+#[test]
+fn while_stmt_display() {
+    let s = Stmt::While {
+        condition: Expr::Literal(Value::Bool(true)),
+        body: Box::new(Stmt::Print(n(1.0))),
+    };
+    assert_eq!(s.to_string(), "(while true (print 1.0))");
+}
