@@ -1,0 +1,2 @@
+print super.greet;
+// expect_compile_error: Can't use 'super' outside of a class.

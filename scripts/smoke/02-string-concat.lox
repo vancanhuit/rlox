@@ -1,0 +1,3 @@
+// String concatenation requires both sides to be strings.
+print "hello, " + "world";  // expect: hello, world
+print "a" + "b" + "c";      // expect: abc

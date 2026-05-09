@@ -209,3 +209,41 @@ fn allows_bare_return_in_init() {
     let stmts = parse("class C { init() { return; } }");
     resolve(&stmts).expect("bare `return;` inside init should be accepted");
 }
+
+// ---- chapter 13: inheritance / super static checks ----
+
+#[test]
+fn rejects_self_inheritance() {
+    let stmts = parse("class Foo < Foo {}");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "A class can't inherit from itself.");
+}
+
+#[test]
+fn rejects_super_outside_a_class() {
+    let stmts = parse("super.method;");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "Can't use 'super' outside of a class.");
+}
+
+#[test]
+fn rejects_super_in_class_with_no_superclass() {
+    let stmts = parse("class C { m() { super.x; } }");
+    let errs = resolve(&stmts).unwrap_err();
+    let LoxError::Parse { message, .. } = &errs[0] else {
+        panic!("expected Parse error");
+    };
+    assert_eq!(message, "Can't use 'super' in a class with no superclass.");
+}
+
+#[test]
+fn allows_super_in_subclass_method() {
+    let stmts = parse("class A {} class B < A { m() { super.m(); } }");
+    resolve(&stmts).expect("`super` inside a subclass method should resolve");
+}

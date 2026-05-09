@@ -1,0 +1,17 @@
+class Box {
+  set(v) { this.value = v; }
+  get()  { return this.value; }
+}
+var b = Box();
+b.set(42);
+print b.get();          // expect: 42
+print b;                // expect: Box instance
+
+// Fields can be assigned dynamically and shadow methods of the same name.
+class Foo {
+  bar() { return "method"; }
+}
+var f = Foo();
+print f.bar();          // expect: method
+f.bar = "field";
+print f.bar;            // expect: field

@@ -1,0 +1,2 @@
+class C { init() { return 1; } }
+// expect_compile_error: Can't return a value from an initializer.

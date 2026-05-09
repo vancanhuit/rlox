@@ -657,4 +657,157 @@ print f;
 ";
         assert_eq!(run(src).unwrap(), "Foo instance\n");
     }
+
+    // ---- chapter 13: inheritance + super ----
+
+    #[test]
+    fn subclass_inherits_method_from_superclass() {
+        // The book's reference fragment for chapter 13.
+        let src = "\
+class Doughnut {
+  cook() { print \"Fry until golden brown.\"; }
+}
+class BostonCream < Doughnut {}
+BostonCream().cook();
+";
+        assert_eq!(run(src).unwrap(), "Fry until golden brown.\n");
+    }
+
+    #[test]
+    fn subclass_can_override_method() {
+        let src = "\
+class A { m() { print \"A\"; } }
+class B < A { m() { print \"B\"; } }
+B().m();
+";
+        assert_eq!(run(src).unwrap(), "B\n");
+    }
+
+    #[test]
+    fn super_calls_superclass_method() {
+        // Book's `super` reference example. `C` doesn't override
+        // `method`, so `C().test()` runs `B.test`, which calls
+        // `super.method()` and dispatches to `A.method` — *not* `B.method`.
+        let src = "\
+class A { method() { print \"A method\"; } }
+class B < A {
+  method() { print \"B method\"; }
+  test() { super.method(); }
+}
+class C < B {}
+C().test();
+";
+        assert_eq!(run(src).unwrap(), "A method\n");
+    }
+
+    #[test]
+    fn super_lookup_walks_ancestors() {
+        // `Bottom` calls `super.greet` → `Middle.greet`.
+        let src = "\
+class Top { greet() { print \"top\"; } }
+class Middle < Top { greet() { print \"middle\"; } }
+class Bottom < Middle {
+  test() { super.greet(); }
+}
+Bottom().test();
+";
+        assert_eq!(run(src).unwrap(), "middle\n");
+    }
+
+    #[test]
+    fn super_with_undefined_method_is_runtime_error() {
+        let src = "\
+class A {}
+class B < A { m() { super.bogus(); } }
+B().m();
+";
+        let errs = run(src).unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Undefined property 'bogus'.");
+    }
+
+    #[test]
+    fn non_class_superclass_is_runtime_error() {
+        // The superclass clause must evaluate to a class.
+        let src = "var NotAClass = 1; class B < NotAClass {}";
+        let errs = run(src).unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Superclass must be a class.");
+    }
+
+    #[test]
+    fn inherited_init_runs_when_subclass_omits_one() {
+        let src = "\
+class Animal {
+  init(name) { this.name = name; }
+}
+class Dog < Animal {}
+var d = Dog(\"Rex\");
+print d.name;
+";
+        assert_eq!(run(src).unwrap(), "Rex\n");
+    }
+
+    #[test]
+    fn super_init_can_initialize_inherited_fields() {
+        let src = "\
+class Vehicle {
+  init(wheels) { this.wheels = wheels; }
+}
+class Bike < Vehicle {
+  init() { super.init(2); }
+}
+print Bike().wheels;
+";
+        assert_eq!(run(src).unwrap(), "2\n");
+    }
+
+    #[test]
+    fn instance_equality_uses_identity() {
+        // Two references to the same instance compare equal; two
+        // independently-constructed instances of the same class don't.
+        // This is identity equality (`Rc::ptr_eq`), matching jlox.
+        let src = "\
+class Foo {}
+var a = Foo();
+var b = Foo();
+var c = a;
+print a == b;
+print a == c;
+print a != b;
+";
+        assert_eq!(run(src).unwrap(), "false\ntrue\ntrue\n");
+    }
+
+    #[test]
+    fn init_returns_same_instance_so_equality_holds() {
+        // The `b.init(...)` re-init pattern returns `this`, so the
+        // returned value is the same instance — `is_equal` must use
+        // `Rc::ptr_eq` for instances rather than fall through to `false`.
+        let src = "\
+class Box { init(x) { this.x = x; } }
+var b = Box(1);
+var c = b.init(2);
+print b == c;
+";
+        assert_eq!(run(src).unwrap(), "true\n");
+    }
+
+    #[test]
+    fn this_inside_inherited_method_refers_to_subclass_instance() {
+        // `Foo` inherits `name` from `A`; `this` resolves to the actual
+        // Foo instance, picking up its own field.
+        let src = "\
+class A { name() { return this.label; } }
+class Foo < A {}
+var f = Foo();
+f.label = \"foo!\";
+print f.name();
+";
+        assert_eq!(run(src).unwrap(), "foo!\n");
+    }
 }

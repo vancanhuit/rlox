@@ -535,3 +535,47 @@ fn dot_requires_property_name() {
         LoxError::Parse { message, .. } if message == "Expect property name after '.'."
     )));
 }
+
+// ---- chapter 13: inheritance + super ----
+
+#[test]
+fn parses_class_with_superclass() {
+    let stmts = program_str("class Sub < Sup {}").unwrap();
+    assert_eq!(stmts[0].to_string(), "(class Sub < Sup)");
+}
+
+#[test]
+fn class_less_requires_superclass_name() {
+    let errs = program_str("class Sub < {}").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect superclass name."
+    )));
+}
+
+#[test]
+fn parses_super_method() {
+    let stmts = program_str("class Sub < Sup { m() { super.greet(); } }").unwrap();
+    assert_eq!(
+        stmts[0].to_string(),
+        "(class Sub < Sup (method m () (; (call (super greet)))))"
+    );
+}
+
+#[test]
+fn super_requires_dot() {
+    let errs = program_str("class Sub < Sup { m() { super; } }").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '.' after 'super'."
+    )));
+}
+
+#[test]
+fn super_dot_requires_method_name() {
+    let errs = program_str("class Sub < Sup { m() { super.; } }").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect superclass method name."
+    )));
+}

@@ -1,0 +1,2 @@
+print this;
+// expect_compile_error: Can't use 'this' outside of a class.

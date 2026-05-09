@@ -1,0 +1,2 @@
+"hello"();
+// expect_runtime_error: Can only call functions and classes.

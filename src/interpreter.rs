@@ -62,21 +62,11 @@ fn is_truthy(v: &Value) -> bool {
     !matches!(v, Value::Nil | Value::Bool(false))
 }
 
-/// Lox equality: `nil` equals only `nil`; otherwise same-type comparison.
-///
-/// Numbers use exact `f64` equality to mirror jlox; the upstream test suite
-/// skips NaN-equality for the Java port for the same reason.
-#[allow(clippy::float_cmp)]
+/// Lox equality: delegates to [`Value`]'s `PartialEq` impl, which the
+/// chapter-12 rework already extended to use `Rc::ptr_eq` for callables
+/// and instances and exact `f64` equality for numbers (matching jlox).
 fn is_equal(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::Bool(x), Value::Bool(y)) => x == y,
-        (Value::Number(x), Value::Number(y)) => x == y,
-        (Value::String(x), Value::String(y)) => x == y,
-        // Callables use identity equality (`Rc::ptr_eq`); see callable.rs.
-        (Value::Callable(x), Value::Callable(y)) => x == y,
-        _ => false,
-    }
+    a == b
 }
 
 fn need_number(op: &Token, v: &Value) -> Result<f64, LoxError> {
@@ -341,30 +331,72 @@ impl<'w> Interpreter<'w> {
                 };
                 Err(InterpError::Return(v))
             }
-            Stmt::Class { name, methods } => {
-                // Two-step define so the class can refer to itself by
-                // name from inside its own methods (matches jlox).
-                self.env.define(name.lexeme.clone(), Value::Nil);
-                let mut method_table: HashMap<String, Rc<LoxFunction>> = HashMap::new();
-                for decl in methods {
-                    let is_initializer = decl.name.lexeme == "init";
-                    let func = LoxFunction {
-                        decl: Rc::clone(decl),
-                        closure: self.env.clone(),
-                        is_initializer,
-                    };
-                    method_table.insert(decl.name.lexeme.clone(), Rc::new(func));
-                }
-                let klass = Rc::new(LoxClass {
-                    name: name.lexeme.clone(),
-                    methods: method_table,
-                });
-                let _ = self
-                    .env
-                    .assign(name, Value::Callable(Callable::Class(klass)));
-                Ok(())
-            }
+            Stmt::Class {
+                name,
+                superclass,
+                methods,
+            } => self.execute_class_decl(name, superclass.as_ref(), methods),
         }
+    }
+
+    fn execute_class_decl(
+        &mut self,
+        name: &Token,
+        superclass: Option<&Expr>,
+        methods: &[Rc<crate::ast::FunctionDecl>],
+    ) -> InterpRes<()> {
+        // Resolve the superclass expression first so a runtime type
+        // error is reported at the `class` line.
+        let parent = if let Some(e) = superclass {
+            let Value::Callable(Callable::Class(c)) = self.eval(e)? else {
+                // The parser only ever produces `Expr::Variable` for the
+                // superclass clause, so we can recover its name token for
+                // the diagnostic.
+                let Expr::Variable(tok) = e else {
+                    unreachable!("parser only produces Expr::Variable for a superclass clause")
+                };
+                return Err(LoxError::runtime(tok, "Superclass must be a class.").into());
+            };
+            Some(c)
+        } else {
+            None
+        };
+
+        // Two-step define so the class can refer to itself by name from
+        // inside its own methods (matches jlox).
+        self.env.define(name.lexeme.clone(), Value::Nil);
+
+        // Methods of a subclass close over a synthetic scope that
+        // pre-defines `super` — same shape as the resolver's `super`
+        // scope so `Expr::Super` lookups land at the resolver-supplied
+        // depth.
+        let method_closure_env = if let Some(sc) = &parent {
+            let env = self.env.child();
+            env.define("super", Value::Callable(Callable::Class(Rc::clone(sc))));
+            env
+        } else {
+            self.env.clone()
+        };
+
+        let mut method_table: HashMap<String, Rc<LoxFunction>> = HashMap::new();
+        for decl in methods {
+            let is_initializer = decl.name.lexeme == "init";
+            let func = LoxFunction {
+                decl: Rc::clone(decl),
+                closure: method_closure_env.clone(),
+                is_initializer,
+            };
+            method_table.insert(decl.name.lexeme.clone(), Rc::new(func));
+        }
+        let klass = Rc::new(LoxClass {
+            name: name.lexeme.clone(),
+            superclass: parent,
+            methods: method_table,
+        });
+        let _ = self
+            .env
+            .assign(name, Value::Callable(Callable::Class(klass)));
+        Ok(())
     }
 
     /// Execute `stmts` in `env`, restoring the previous environment even
@@ -440,6 +472,39 @@ impl<'w> Interpreter<'w> {
                 Ok(v)
             }
             Expr::This(keyword) => Ok(self.lookup_variable(expr, keyword)?),
+            Expr::Super { method, .. } => {
+                // The resolver places `super` at some depth; `this` lives
+                // exactly one scope inside it (built by `bind`).
+                let distance = *self
+                    .locals
+                    .get(&lookup_key(expr))
+                    .expect("resolver should have placed every `super` reference");
+                let Value::Callable(Callable::Class(super_class)) = self
+                    .env
+                    .get_at(distance, "super")
+                    .expect("resolver guarantees `super` exists in the enclosing scope chain")
+                else {
+                    unreachable!("`super` always resolves to a class");
+                };
+                let Value::Instance(instance) = self
+                    .env
+                    .get_at(distance - 1, "this")
+                    .expect("resolver guarantees `this` lives one scope inside `super`")
+                else {
+                    unreachable!("`this` always resolves to an instance inside a method body");
+                };
+                match super_class.find_method(&method.lexeme) {
+                    Some(m) => {
+                        let bound = m.bind(instance);
+                        Ok(Value::Callable(Callable::Function(bound)))
+                    }
+                    None => Err(LoxError::runtime(
+                        method,
+                        format!("Undefined property '{}'.", method.lexeme),
+                    )
+                    .into()),
+                }
+            }
         }
     }
 

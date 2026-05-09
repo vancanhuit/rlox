@@ -114,6 +114,17 @@ fn parse_atom(p: &mut Pos<'_>) -> Result<Expr, LoxError> {
             p.bump();
             return Ok(Expr::This(keyword));
         }
+        TokenType::Super => {
+            let keyword = tok.clone();
+            p.bump();
+            expect(p, TokenType::Dot, "Expect '.' after 'super'.")?;
+            if !p.check(TokenType::Identifier) {
+                return Err(LoxError::parse(p.head(), "Expect superclass method name."));
+            }
+            let method = p.head().clone();
+            p.bump();
+            return Ok(Expr::Super { keyword, method });
+        }
         TokenType::LeftParen => {
             p.bump();
             let inner = assignment(p)?;
@@ -285,22 +296,38 @@ fn declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
     statement(p)
 }
 
-/// Parse a `class Name { method... }` declaration. Each method is
-/// produced by [`function_decl`] with kind `"method"` so error messages
-/// say `Expect method name.` instead of `Expect function name.`.
+/// Parse a `class Name [< Super] { method... }` declaration. The
+/// optional `< Super` clause names a superclass; the resulting
+/// `Expr::Variable` is resolved like any other identifier read.
 fn class_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
     if !p.check(TokenType::Identifier) {
         return Err(LoxError::parse(p.head(), "Expect class name."));
     }
     let name = p.head().clone();
     p.bump();
+
+    let superclass = if p.eat(TokenType::Less) {
+        if !p.check(TokenType::Identifier) {
+            return Err(LoxError::parse(p.head(), "Expect superclass name."));
+        }
+        let sc_name = p.head().clone();
+        p.bump();
+        Some(Expr::Variable(sc_name))
+    } else {
+        None
+    };
+
     expect(p, TokenType::LeftBrace, "Expect '{' before class body.")?;
     let mut methods: Vec<Rc<FunctionDecl>> = Vec::new();
     while !p.check(TokenType::RightBrace) && !p.eof() {
         methods.push(function_decl(p, "method")?);
     }
     expect(p, TokenType::RightBrace, "Expect '}' after class body.")?;
-    Ok(Stmt::Class { name, methods })
+    Ok(Stmt::Class {
+        name,
+        superclass,
+        methods,
+    })
 }
 
 /// Parse a function declaration as a top-level [`Stmt::Function`]. Used

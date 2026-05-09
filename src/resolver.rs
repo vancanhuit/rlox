@@ -47,6 +47,10 @@ enum FunctionKind {
 enum ClassKind {
     None,
     Class,
+    /// A class that inherits from another (chapter 13). Distinguished
+    /// from `Class` so the resolver can reject `super` references that
+    /// would have nothing to look up.
+    Subclass,
 }
 
 /// Compute the address-keyed depth used by the interpreter. The cast
@@ -158,10 +162,37 @@ impl Resolver {
                     self.resolve_expr(v);
                 }
             }
-            Stmt::Class { name, methods } => {
-                let enclosing = std::mem::replace(&mut self.current_class, ClassKind::Class);
+            Stmt::Class {
+                name,
+                superclass,
+                methods,
+            } => {
+                let class_kind = if superclass.is_some() {
+                    ClassKind::Subclass
+                } else {
+                    ClassKind::Class
+                };
+                let enclosing = std::mem::replace(&mut self.current_class, class_kind);
                 self.declare(name);
                 self.define(name);
+
+                if let Some(sc_expr) = superclass {
+                    if let Expr::Variable(sc_name) = sc_expr
+                        && sc_name.lexeme == name.lexeme
+                    {
+                        self.errors.push(LoxError::parse(
+                            sc_name,
+                            "A class can't inherit from itself.",
+                        ));
+                    }
+                    self.resolve_expr(sc_expr);
+                    // Synthetic scope holding `super` — one level outside
+                    // the `this` scope so depth math stays predictable.
+                    self.begin_scope();
+                    if let Some(scope) = self.scopes.last_mut() {
+                        scope.insert("super".to_string(), true);
+                    }
+                }
 
                 // Open a synthetic scope around the methods that pre-binds
                 // `this` — depth 0 from any method body's perspective.
@@ -178,6 +209,10 @@ impl Resolver {
                     self.resolve_function(&method.params, &method.body, kind);
                 }
                 self.end_scope();
+
+                if superclass.is_some() {
+                    self.end_scope();
+                }
 
                 self.current_class = enclosing;
             }
@@ -229,6 +264,26 @@ impl Resolver {
                         "Can't use 'this' outside of a class.",
                     ));
                     return;
+                }
+                self.resolve_local(expr, keyword);
+            }
+            Expr::Super { keyword, .. } => {
+                match self.current_class {
+                    ClassKind::None => {
+                        self.errors.push(LoxError::parse(
+                            keyword,
+                            "Can't use 'super' outside of a class.",
+                        ));
+                        return;
+                    }
+                    ClassKind::Class => {
+                        self.errors.push(LoxError::parse(
+                            keyword,
+                            "Can't use 'super' in a class with no superclass.",
+                        ));
+                        return;
+                    }
+                    ClassKind::Subclass => {}
                 }
                 self.resolve_local(expr, keyword);
             }

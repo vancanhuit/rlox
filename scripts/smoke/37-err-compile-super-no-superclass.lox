@@ -1,0 +1,2 @@
+class C { m() { super.x; } }
+// expect_compile_error: Can't use 'super' in a class with no superclass.

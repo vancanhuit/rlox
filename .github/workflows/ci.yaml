@@ -91,6 +91,12 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked --bin rlox
 
+      - name: Smoke-test the binary
+        # Drives target/release/rlox against scripts/smoke/*.lox and asserts
+        # on stdout / stderr / exit code per the //expect: directives.
+        # `--no-build` reuses the artifact from the previous step.
+        run: python3 scripts/smoke_test.py --no-build
+
       - name: Package binary
         env:
           VERSION: ${{ steps.version.outputs.version }}

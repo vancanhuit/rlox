@@ -69,19 +69,29 @@ impl LoxFunction {
     }
 }
 
-/// A user-defined class (chapter 12). Calling the class produces an
-/// instance; if the class declares an `init` method, it runs as the
-/// constructor and the class's arity is the initializer's arity.
+/// A user-defined class (chapter 12, extended in chapter 13 with single
+/// inheritance). Calling the class produces an instance; if the class
+/// declares an `init` method, it runs as the constructor and the
+/// class's arity is the initializer's arity.
 #[derive(Debug)]
 pub struct LoxClass {
     pub name: String,
+    pub superclass: Option<Rc<LoxClass>>,
     pub methods: HashMap<String, Rc<LoxFunction>>,
 }
 
 impl LoxClass {
+    /// Look up `name` first on this class, then up the superclass chain.
+    /// Returns the first match.
     #[must_use]
-    pub fn find_method(&self, name: &str) -> Option<&Rc<LoxFunction>> {
-        self.methods.get(name)
+    pub fn find_method(&self, name: &str) -> Option<Rc<LoxFunction>> {
+        if let Some(m) = self.methods.get(name) {
+            return Some(Rc::clone(m));
+        }
+        if let Some(sc) = &self.superclass {
+            return sc.find_method(name);
+        }
+        None
     }
 
     #[must_use]

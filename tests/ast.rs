@@ -293,6 +293,7 @@ fn this_expr_display() {
 fn empty_class_stmt_display() {
     let s = Stmt::Class {
         name: name("Foo"),
+        superclass: None,
         methods: vec![],
     };
     assert_eq!(s.to_string(), "(class Foo)");
@@ -302,6 +303,7 @@ fn empty_class_stmt_display() {
 fn class_stmt_display_with_methods() {
     let s = Stmt::Class {
         name: name("Greeter"),
+        superclass: None,
         methods: vec![Rc::new(FunctionDecl {
             name: name("greet"),
             params: vec![],
@@ -312,4 +314,25 @@ fn class_stmt_display_with_methods() {
         s.to_string(),
         "(class Greeter (method greet () (print hi)))"
     );
+}
+
+// ---- chapter 13: superclass / super display ----
+
+#[test]
+fn super_expr_display() {
+    let e = Expr::Super {
+        keyword: Token::new(TokenType::Super, "super", None, 1),
+        method: name("greet"),
+    };
+    assert_eq!(e.to_string(), "(super greet)");
+}
+
+#[test]
+fn class_stmt_display_with_superclass() {
+    let s = Stmt::Class {
+        name: name("Sub"),
+        superclass: Some(Expr::Variable(name("Sup"))),
+        methods: vec![],
+    };
+    assert_eq!(s.to_string(), "(class Sub < Sup)");
 }

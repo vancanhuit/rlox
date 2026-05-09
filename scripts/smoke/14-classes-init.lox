@@ -1,0 +1,14 @@
+class Point {
+  init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+}
+var p = Point(3, 4);
+print p.x;              // expect: 3
+print p.y;              // expect: 4
+
+// `init` always returns the instance, even when explicitly re-invoked.
+var q = p.init(7, 8);
+print q.x;              // expect: 7
+print q == p;           // expect: true

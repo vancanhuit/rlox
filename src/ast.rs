@@ -1,8 +1,9 @@
 //! Abstract syntax tree for Lox expressions and statements
 //! (chapters 5–6, extended by chapter 8 with statements + variables,
 //! chapter 9 with control flow + short-circuit logical operators,
-//! chapter 10 with function declarations, calls, and `return`, and
-//! chapter 12 with classes, properties, and `this`).
+//! chapter 10 with function declarations, calls, and `return`,
+//! chapter 12 with classes, properties, and `this`, and chapter 13
+//! with single inheritance + `super`).
 //!
 //! We use idiomatic Rust enums + `match` rather than the book's Visitor
 //! pattern. The `Display` impls produce a parenthesised, prefix-Lisp form
@@ -76,6 +77,12 @@ pub enum Expr {
     /// `this` keyword (chapter 12). The token carries the line for
     /// runtime errors and is the resolver's lookup key.
     This(Token),
+    /// `super.method` access (chapter 13). Always paired with a method
+    /// name — bare `super` isn't a Lox expression on its own.
+    Super {
+        keyword: Token,
+        method: Token,
+    },
 }
 
 impl fmt::Display for Expr {
@@ -106,6 +113,7 @@ impl fmt::Display for Expr {
                 value,
             } => write!(f, "(.= {object} {} {value})", name.lexeme),
             Self::This(_) => f.write_str("this"),
+            Self::Super { method, .. } => write!(f, "(super {})", method.lexeme),
         }
     }
 }
@@ -145,10 +153,12 @@ pub enum Stmt {
     /// for runtime errors; `value` is `None` when the bare keyword form
     /// is used (returns `nil`).
     Return { keyword: Token, value: Option<Expr> },
-    /// `class Name { methods... }` (chapter 12). Each method is the
-    /// same `Rc<FunctionDecl>` shape as a top-level `fun` declaration.
+    /// `class Name [< Super] { methods... }` (chapters 12–13). The
+    /// optional `superclass` is parsed as an `Expr::Variable` so the
+    /// resolver can look it up just like any other reference.
     Class {
         name: Token,
+        superclass: Option<Expr>,
         methods: Vec<Rc<FunctionDecl>>,
     },
 }
@@ -198,9 +208,16 @@ impl fmt::Display for Stmt {
                 Some(v) => write!(f, "(return {v})"),
                 None => f.write_str("(return)"),
             },
-            Self::Class { name, methods } => {
+            Self::Class {
+                name,
+                superclass,
+                methods,
+            } => {
                 f.write_str("(class ")?;
                 f.write_str(&name.lexeme)?;
+                if let Some(sc) = superclass {
+                    write!(f, " < {sc}")?;
+                }
                 for m in methods {
                     f.write_str(" (method ")?;
                     f.write_str(&m.name.lexeme)?;
