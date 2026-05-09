@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use rlox::{LoxError, run_to};
+use rlox::{Interpreter, LoxError, parse_program, run_to, scan};
 
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -70,16 +70,27 @@ fn run_file(path: &Path) -> ExitCode {
 fn run_prompt() -> ExitCode {
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
+    // Persistent REPL state (chapter 10): a single `Interpreter` lives
+    // for the whole session so variable bindings, function declarations,
+    // and the global `clock()` survive across prompts. The interpreter
+    // owns the stdout writer; the prompt itself goes to stderr to avoid
+    // borrow conflicts and to keep program output cleanly separable from
+    // UI chrome on redirected pipelines.
+    let mut interp = Interpreter::new(&mut stdout);
     let mut line = String::new();
+    let stderr = io::stderr();
     loop {
-        write!(stdout, "> ").ok();
-        stdout.flush().ok();
+        {
+            let mut prompt = stderr.lock();
+            let _ = write!(prompt, "> ");
+            let _ = prompt.flush();
+        }
 
         line.clear();
         match stdin.lock().read_line(&mut line) {
             Ok(0) => {
-                // EOF — print a final newline for tidy terminals and exit.
-                writeln!(stdout).ok();
+                // EOF — print a final newline on stderr for tidy terminals.
+                let _ = writeln!(stderr.lock());
                 return ExitCode::SUCCESS;
             }
             Ok(_) => {}
@@ -94,16 +105,22 @@ fn run_prompt() -> ExitCode {
             continue;
         }
 
-        // Each REPL line is parsed as a fresh program. Variable bindings
-        // do NOT persist across lines yet; chapter 8's REPL keeps the same
-        // semantics as the script runner. A persistent REPL environment
-        // arrives once we reorganise around `Rc<RefCell<Environment>>` in
-        // chapter 10 (closures need it anyway).
-        match run_to(trimmed, &mut stdout) {
+        match repl_step(trimmed, &mut interp) {
             Ok(()) => {}
             Err(errors) => report_errors(&errors),
         }
     }
+}
+
+/// Scan + parse + execute a single REPL line through the long-lived
+/// interpreter, returning every error it produced.
+fn repl_step(source: &str, interp: &mut Interpreter<'_>) -> Result<(), Vec<LoxError>> {
+    let (tokens, scan_errors) = scan(source);
+    if !scan_errors.is_empty() {
+        return Err(scan_errors);
+    }
+    let stmts = parse_program(&tokens)?;
+    interp.interpret(&stmts).map_err(|e| vec![e])
 }
 
 fn report_errors(errors: &[LoxError]) {

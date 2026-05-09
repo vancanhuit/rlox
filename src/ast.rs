@@ -1,6 +1,7 @@
 //! Abstract syntax tree for Lox expressions and statements
-//! (chapters 5–6, extended by chapter 8 with statements + variables and
-//! by chapter 9 with control flow + short-circuit logical operators).
+//! (chapters 5–6, extended by chapter 8 with statements + variables,
+//! chapter 9 with control flow + short-circuit logical operators, and
+//! chapter 10 with function declarations, calls, and `return`).
 //!
 //! We use idiomatic Rust enums + `match` rather than the book's Visitor
 //! pattern. The `Display` impls produce a parenthesised, prefix-Lisp form
@@ -40,6 +41,13 @@ pub enum Expr {
     },
     /// Read of a variable by name (the token carries the source location).
     Variable(Token),
+    /// Function call (chapter 10). `paren` is the closing `)` for runtime
+    /// error reporting.
+    Call {
+        callee: Box<Expr>,
+        paren: Token,
+        arguments: Vec<Expr>,
+    },
 }
 
 impl fmt::Display for Expr {
@@ -53,6 +61,16 @@ impl fmt::Display for Expr {
             Self::Literal(value) => write!(f, "{value}"),
             Self::Unary { op, right } => parenthesize(f, &op.lexeme, [right.as_ref()]),
             Self::Variable(name) => f.write_str(&name.lexeme),
+            Self::Call {
+                callee, arguments, ..
+            } => {
+                f.write_str("(call ")?;
+                write!(f, "{callee}")?;
+                for a in arguments {
+                    write!(f, " {a}")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
@@ -82,6 +100,16 @@ pub enum Stmt {
     /// parse time into a `Block` containing a `While`, so we don't need a
     /// separate `For` variant.
     While { condition: Expr, body: Box<Stmt> },
+    /// `fun name(params) { body }` (chapter 10).
+    Function {
+        name: Token,
+        params: Vec<Token>,
+        body: Vec<Stmt>,
+    },
+    /// `return [value];` (chapter 10). `keyword` carries the source line
+    /// for runtime errors; `value` is `None` when the bare keyword form
+    /// is used (returns `nil`).
+    Return { keyword: Token, value: Option<Expr> },
 }
 
 impl fmt::Display for Stmt {
@@ -109,6 +137,26 @@ impl fmt::Display for Stmt {
                 None => write!(f, "(if {condition} {then_branch})"),
             },
             Self::While { condition, body } => write!(f, "(while {condition} {body})"),
+            Self::Function { name, params, body } => {
+                f.write_str("(fun ")?;
+                f.write_str(&name.lexeme)?;
+                f.write_str(" (")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" ")?;
+                    }
+                    f.write_str(&p.lexeme)?;
+                }
+                f.write_str(")")?;
+                for s in body {
+                    write!(f, " {s}")?;
+                }
+                f.write_str(")")
+            }
+            Self::Return { value, .. } => match value {
+                Some(v) => write!(f, "(return {v})"),
+                None => f.write_str("(return)"),
+            },
         }
     }
 }

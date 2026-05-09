@@ -355,4 +355,141 @@ print a;
         let src = "var i = 1; while (i) { print i; i = nil; }";
         assert_eq!(run(src).unwrap(), "1\n");
     }
+
+    // ---- chapter 10: functions, calls, closures, return ----
+
+    #[test]
+    fn function_declaration_then_call_returns_value() {
+        let src = "fun add(a, b) { return a + b; } print add(2, 3);";
+        assert_eq!(run(src).unwrap(), "5\n");
+    }
+
+    #[test]
+    fn function_without_explicit_return_yields_nil() {
+        let src = "fun f() {} print f();";
+        assert_eq!(run(src).unwrap(), "nil\n");
+    }
+
+    #[test]
+    fn bare_return_inside_function_yields_nil() {
+        let src = "fun f() { return; } print f();";
+        assert_eq!(run(src).unwrap(), "nil\n");
+    }
+
+    #[test]
+    fn return_short_circuits_remaining_statements() {
+        let src = "fun f() { return 1; print 2; } print f();";
+        assert_eq!(run(src).unwrap(), "1\n");
+    }
+
+    #[test]
+    fn function_value_displays_with_name() {
+        let src = "fun greet() {} print greet;";
+        assert_eq!(run(src).unwrap(), "<fn greet>\n");
+    }
+
+    #[test]
+    fn calling_non_callable_is_runtime_error() {
+        let errs = run("\"x\"();").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error, got {:?}", errs[0]);
+        };
+        assert_eq!(message, "Can only call functions and classes.");
+    }
+
+    #[test]
+    fn arity_mismatch_reports_expected_vs_actual() {
+        let src = "fun f(a, b) { return a + b; } f(1);";
+        let errs = run(src).unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Expected 2 arguments but got 1.");
+    }
+
+    #[test]
+    fn closure_captures_outer_binding() {
+        // Book reference fragment: makeCounter returns a closure that
+        // increments a private counter on each call.
+        let src = "\
+fun makeCounter() {
+  var i = 0;
+  fun count() { i = i + 1; return i; }
+  return count;
+}
+var c = makeCounter();
+print c();
+print c();
+print c();
+";
+        assert_eq!(run(src).unwrap(), "1\n2\n3\n");
+    }
+
+    #[test]
+    fn closure_sees_late_bound_outer_variable() {
+        // `f` reads `x` lazily — the value at call time, not declaration.
+        let src = "var x = 1; fun f() { return x; } x = 99; print f();";
+        assert_eq!(run(src).unwrap(), "99\n");
+    }
+
+    #[test]
+    fn recursion_works_via_closure_self_reference() {
+        // `fib` references itself; the closure captured at declaration
+        // time includes the binding being defined.
+        let src = "\
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 2) + fib(n - 1);
+}
+print fib(8);
+";
+        assert_eq!(run(src).unwrap(), "21\n");
+    }
+
+    #[test]
+    fn parameters_shadow_outer_bindings_only_inside_the_function() {
+        let src = "\
+var x = 1;
+fun f(x) { return x; }
+print f(99);
+print x;
+";
+        assert_eq!(run(src).unwrap(), "99\n1\n");
+    }
+
+    #[test]
+    fn clock_native_returns_a_number() {
+        // We can't assert the exact value, but we can assert that
+        // `clock()` is in scope and returns a Number.
+        let src = "print clock() > 0;";
+        assert_eq!(run(src).unwrap(), "true\n");
+    }
+
+    #[test]
+    fn clock_arity_check_rejects_extra_args() {
+        let errs = run("clock(1);").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Expected 0 arguments but got 1.");
+    }
+
+    #[test]
+    fn return_at_top_level_is_runtime_error() {
+        // Without the chapter-11 resolver this leaks as a runtime error
+        // rather than a parse-time one. Either way, it must not silently
+        // succeed.
+        let errs = run("return 1;").unwrap_err();
+        assert!(matches!(errs[0], LoxError::Runtime { .. }));
+    }
+
+    #[test]
+    fn nested_calls_thread_arguments_correctly() {
+        let src = "\
+fun double(n) { return n * 2; }
+fun triple(n) { return n * 3; }
+print double(triple(5));
+";
+        assert_eq!(run(src).unwrap(), "30\n");
+    }
 }

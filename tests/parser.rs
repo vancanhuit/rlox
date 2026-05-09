@@ -373,3 +373,84 @@ fn for_loop_without_initializer_skips_outer_block() {
         "(while (< i 3.0) (block (print i) (; (= i (+ i 1.0)))))"
     );
 }
+
+// ---- chapter 10: function declarations, calls, return ----
+
+#[test]
+fn parses_call_with_no_arguments() {
+    let stmts = program_str("clock();").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (call clock))");
+}
+
+#[test]
+fn parses_call_with_arguments() {
+    let stmts = program_str("add(1, 2, 3);").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (call add 1.0 2.0 3.0))");
+}
+
+#[test]
+fn parses_chained_calls_left_associatively() {
+    // `f(1)(2)` ⇒ (call (call f 1) 2)
+    let stmts = program_str("f(1)(2);").unwrap();
+    assert_eq!(stmts[0].to_string(), "(; (call (call f 1.0) 2.0))");
+}
+
+#[test]
+fn call_requires_closing_paren() {
+    let errs = program_str("f(1, 2;").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect ')' after arguments."
+    )));
+}
+
+#[test]
+fn parses_function_declaration() {
+    let stmts = program_str("fun add(a, b) { return a + b; }").unwrap();
+    assert_eq!(stmts[0].to_string(), "(fun add (a b) (return (+ a b)))");
+}
+
+#[test]
+fn parses_function_with_no_parameters() {
+    let stmts = program_str("fun greet() { print \"hi\"; }").unwrap();
+    assert_eq!(stmts[0].to_string(), "(fun greet () (print hi))");
+}
+
+#[test]
+fn function_requires_name() {
+    let errs = program_str("fun () {}").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect function name."
+    )));
+}
+
+#[test]
+fn function_requires_parens_after_name() {
+    let errs = program_str("fun greet {}").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '(' after function name."
+    )));
+}
+
+#[test]
+fn function_requires_brace_before_body() {
+    let errs = program_str("fun greet() print 1;").unwrap_err();
+    assert!(errs.iter().any(|e| matches!(
+        e,
+        LoxError::Parse { message, .. } if message == "Expect '{' before function body."
+    )));
+}
+
+#[test]
+fn parses_bare_return() {
+    let stmts = program_str("fun f() { return; }").unwrap();
+    assert_eq!(stmts[0].to_string(), "(fun f () (return))");
+}
+
+#[test]
+fn parses_return_with_value() {
+    let stmts = program_str("fun f() { return 42; }").unwrap();
+    assert_eq!(stmts[0].to_string(), "(fun f () (return 42.0))");
+}

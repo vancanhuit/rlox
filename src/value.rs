@@ -9,6 +9,8 @@
 
 use std::fmt;
 
+use crate::callable::Callable;
+
 /// A Lox value: produced by literal expressions and by the interpreter.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -16,6 +18,9 @@ pub enum Value {
     Bool(bool),
     Number(f64),
     String(String),
+    /// A callable function (chapter 10): either a built-in native or a
+    /// user-defined `LoxFunction` carrying its captured environment.
+    Callable(Callable),
 }
 
 impl fmt::Display for Value {
@@ -31,6 +36,10 @@ impl fmt::Display for Value {
                 }
             }
             Self::String(s) => f.write_str(s),
+            Self::Callable(Callable::Native(n)) => write!(f, "<native fn {}>", n.name),
+            Self::Callable(Callable::Function(func)) => {
+                write!(f, "<fn {}>", func.decl.name.lexeme)
+            }
         }
     }
 }

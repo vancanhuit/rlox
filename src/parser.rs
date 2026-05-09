@@ -1,7 +1,8 @@
 //! Pratt parser for Lox expressions (chapter 6) extended with statements,
-//! variable declarations, and assignment (chapter 8), then control flow
-//! and short-circuit logical operators (chapter 9). `for` loops are
-//! desugared at parse time into the existing `Block` + `While` nodes.
+//! variable declarations, and assignment (chapter 8), control flow and
+//! short-circuit logical operators (chapter 9), and function declarations,
+//! calls, and `return` (chapter 10). `for` loops are desugared at parse
+//! time into the existing `Block` + `While` nodes.
 
 use crate::ast::{Expr, Stmt};
 use crate::error::LoxError;
@@ -85,7 +86,7 @@ fn lit_value(lit: Option<&Literal>) -> Value {
     }
 }
 
-fn expect(p: &mut Pos<'_>, want: TokenType, msg: &str) -> Result<(), LoxError> {
+fn expect(p: &mut Pos<'_>, want: TokenType, msg: impl Into<String>) -> Result<(), LoxError> {
     if !p.eof() && p.head().ttype == want {
         p.bump();
         Ok(())
@@ -132,7 +133,25 @@ fn parse_bp(p: &mut Pos<'_>, min_bp: Bp) -> Result<Expr, LoxError> {
         parse_atom(p)?
     };
 
-    while let Some((lbp, rbp)) = infix_bp(p.head().ttype) {
+    loop {
+        // Postfix call: `(` immediately after a primary/call expression.
+        // Binds tighter than any infix, so it's checked before infix_bp.
+        if p.check(TokenType::LeftParen) {
+            p.bump();
+            let arguments = call_arguments(p)?;
+            let paren = p.head().clone();
+            expect(p, TokenType::RightParen, "Expect ')' after arguments.")?;
+            lhs = Expr::Call {
+                callee: Box::new(lhs),
+                paren,
+                arguments,
+            };
+            continue;
+        }
+
+        let Some((lbp, rbp)) = infix_bp(p.head().ttype) else {
+            break;
+        };
         if lbp < min_bp {
             break;
         }
@@ -156,6 +175,31 @@ fn parse_bp(p: &mut Pos<'_>, min_bp: Bp) -> Result<Expr, LoxError> {
         };
     }
     Ok(lhs)
+}
+
+/// Parse a comma-separated argument list, stopping at the closing `)`.
+/// Lox caps arguments at 255 to mirror jlox's compatibility with the
+/// upcoming bytecode VM (chapters 14+); we report but don't fail on the
+/// 256th argument so the rest of the program still parses.
+fn call_arguments(p: &mut Pos<'_>) -> Result<Vec<Expr>, LoxError> {
+    let mut args = Vec::new();
+    if !p.check(TokenType::RightParen) {
+        loop {
+            if args.len() >= 255 {
+                // Diagnostic only — we still consume the argument so
+                // synchronization doesn't break further down.
+                return Err(LoxError::parse(
+                    p.head(),
+                    "Can't have more than 255 arguments.",
+                ));
+            }
+            args.push(assignment(p)?);
+            if !p.eat(TokenType::Comma) {
+                break;
+            }
+        }
+    }
+    Ok(args)
 }
 
 /// Parse an assignment expression. Assignment is right-associative and has
@@ -199,10 +243,55 @@ pub fn parse(tokens: &[Token]) -> Result<Expr, LoxError> {
 // --- statements (chapter 8) ---
 
 fn declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    if p.eat(TokenType::Fun) {
+        return function(p, "function");
+    }
     if p.eat(TokenType::Var) {
         return var_declaration(p);
     }
     statement(p)
+}
+
+/// Parse a function declaration. `kind` is "function" for top-level
+/// `fun` declarations; chapter 12 will reuse this with kind = "method".
+fn function(p: &mut Pos<'_>, kind: &str) -> Result<Stmt, LoxError> {
+    if !p.check(TokenType::Identifier) {
+        return Err(LoxError::parse(p.head(), format!("Expect {kind} name.")));
+    }
+    let name = p.head().clone();
+    p.bump();
+    expect(
+        p,
+        TokenType::LeftParen,
+        format!("Expect '(' after {kind} name."),
+    )?;
+    let mut params: Vec<Token> = Vec::new();
+    if !p.check(TokenType::RightParen) {
+        loop {
+            if params.len() >= 255 {
+                return Err(LoxError::parse(
+                    p.head(),
+                    "Can't have more than 255 parameters.",
+                ));
+            }
+            if !p.check(TokenType::Identifier) {
+                return Err(LoxError::parse(p.head(), "Expect parameter name."));
+            }
+            params.push(p.head().clone());
+            p.bump();
+            if !p.eat(TokenType::Comma) {
+                break;
+            }
+        }
+    }
+    expect(p, TokenType::RightParen, "Expect ')' after parameters.")?;
+    expect(
+        p,
+        TokenType::LeftBrace,
+        format!("Expect '{{' before {kind} body."),
+    )?;
+    let body = block(p)?;
+    Ok(Stmt::Function { name, params, body })
 }
 
 fn var_declaration(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
@@ -237,10 +326,25 @@ fn statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
     if p.eat(TokenType::Print) {
         return print_statement(p);
     }
+    if p.check(TokenType::Return) {
+        return return_statement(p);
+    }
     if p.eat(TokenType::LeftBrace) {
         return Ok(Stmt::Block(block(p)?));
     }
     expression_statement(p)
+}
+
+fn return_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
+    let keyword = p.head().clone();
+    p.bump();
+    let value = if p.check(TokenType::Semicolon) {
+        None
+    } else {
+        Some(assignment(p)?)
+    };
+    expect(p, TokenType::Semicolon, "Expect ';' after return value.")?;
+    Ok(Stmt::Return { keyword, value })
 }
 
 fn if_statement(p: &mut Pos<'_>) -> Result<Stmt, LoxError> {
