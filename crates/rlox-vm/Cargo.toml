@@ -12,5 +12,8 @@ publish.workspace = true
 name = "rlox_vm"
 path = "src/lib.rs"
 
+[dependencies]
+rlox-shared = { workspace = true }
+
 [lints]
 workspace = true

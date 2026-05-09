@@ -46,22 +46,14 @@ compile_error!("enable exactly one of the `tree` or `vm` features (default: tree
 #[cfg(feature = "tree")]
 use rlox_tree as backend;
 
-// The bytecode VM gains an end-to-end runner in PR 4 (chapter 17 —
-// Compiling Expressions). Earlier PRs only deliver lower-level pieces
-// (chunks, disassembler, stack VM with hand-written bytecode), which
-// are exercised by the crate's own unit tests rather than via the CLI.
 #[cfg(feature = "vm")]
-compile_error!(
-    "the `vm` backend isn't wired to the CLI yet; it lights up in PR 4 (phase/17-expr-compiler). \
-     Use the default `tree` feature for now, or run rlox-vm's unit tests directly with \
-     `cargo test -p rlox-vm`."
-);
+use rlox_vm as backend;
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use backend::{Interpreter, LoxError, parse_program, resolve, run_to, scan};
+use backend::{LoxError, run_to};
 use clap::Parser;
 
 const EX_USAGE: u8 = 64;
@@ -106,15 +98,18 @@ fn run_file(path: &Path) -> ExitCode {
     }
 }
 
+/// REPL — the tree-walk variant carries a long-lived `Interpreter`
+/// across prompts so chapter-8-and-up state (variables, functions,
+/// classes) survives between lines. The VM at chapter 17 is
+/// stateless (no globals yet), so the `vm` build's REPL just runs
+/// `run_to` once per line; chapter 21 will introduce a persistent
+/// VM state and a richer REPL surface.
+#[cfg(feature = "tree")]
 fn run_prompt() -> ExitCode {
+    use rlox_tree::Interpreter;
+
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
-    // Persistent REPL state (chapter 10): a single `Interpreter` lives
-    // for the whole session so variable bindings, function declarations,
-    // and the global `clock()` survive across prompts. The interpreter
-    // owns the stdout writer; the prompt itself goes to stderr to avoid
-    // borrow conflicts and to keep program output cleanly separable from
-    // UI chrome on redirected pipelines.
     let mut interp = Interpreter::new(&mut stdout);
     let mut line = String::new();
     let stderr = io::stderr();
@@ -149,7 +144,7 @@ fn run_prompt() -> ExitCode {
             continue;
         }
 
-        match repl_step(trimmed, &mut interp) {
+        match repl_step_tree(trimmed, &mut interp) {
             Ok(()) => {}
             Err(errors) => report_errors(&errors),
         }
@@ -161,7 +156,13 @@ fn run_prompt() -> ExitCode {
 /// resolver runs per line; depths for previously-defined functions stay
 /// alive via `Rc<FunctionDecl>` inside the interpreter's stored
 /// `LoxFunction` values.
-fn repl_step(source: &str, interp: &mut Interpreter<'_>) -> Result<(), Vec<LoxError>> {
+#[cfg(feature = "tree")]
+fn repl_step_tree(
+    source: &str,
+    interp: &mut rlox_tree::Interpreter<'_>,
+) -> Result<(), Vec<LoxError>> {
+    use rlox_tree::{parse_program, resolve, scan};
+
     let (tokens, scan_errors) = scan(source);
     if !scan_errors.is_empty() {
         return Err(scan_errors);
@@ -170,6 +171,51 @@ fn repl_step(source: &str, interp: &mut Interpreter<'_>) -> Result<(), Vec<LoxEr
     let locals = resolve(&stmts)?;
     interp.merge_locals(locals);
     interp.interpret(&stmts).map_err(|e| vec![e])
+}
+
+/// REPL for the bytecode-VM build. Each line is compiled into its own
+/// chunk and executed; there's no carry-over state until chapter 21
+/// introduces globals.
+#[cfg(feature = "vm")]
+fn run_prompt() -> ExitCode {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout().lock();
+    let mut line = String::new();
+    let stderr = io::stderr();
+    loop {
+        {
+            let mut prompt = stderr.lock();
+            let _ = write!(prompt, "> ");
+            let _ = prompt.flush();
+        }
+
+        line.clear();
+        let read = stdin.lock().read_line(&mut line);
+        match read {
+            Ok(0) => {
+                let _ = writeln!(stderr.lock());
+                return ExitCode::SUCCESS;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                eprintln!("rlox: read error: {err}");
+                return ExitCode::from(EX_SOFTWARE);
+            }
+        }
+
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        match run_to(trimmed, &mut stdout) {
+            Ok(()) => {}
+            Err(errors) => {
+                let _ = stdout.flush();
+                report_errors(&errors);
+            }
+        }
+    }
 }
 
 fn report_errors(errors: &[LoxError]) {

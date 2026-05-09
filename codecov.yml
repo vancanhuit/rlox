@@ -8,12 +8,13 @@ coverage:
       default:
         target: 80%
 
-# `src/main.rs` is exercised end-to-end via subprocess smoke tests in
-# `tests/cli.rs`, but `cargo llvm-cov` only instruments the parent process
-# so those lines never show up in the lcov report. Excluding the file keeps
-# the patch-coverage threshold meaningful for the library code.
+# The umbrella binary's `main.rs` is exercised end-to-end via subprocess
+# smoke tests in `crates/rlox/tests/cli.rs`, but `cargo llvm-cov` only
+# instruments the parent process so those lines never show up in the lcov
+# report. Excluding the file keeps the patch-coverage threshold meaningful
+# for the library code.
 ignore:
-  - "src/main.rs"
+  - "crates/rlox/src/main.rs"
 
 comment:
   layout: "diff, files"

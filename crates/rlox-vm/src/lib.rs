@@ -7,23 +7,61 @@
 //!
 //! Subsequent chapters will add:
 //!
-//! - chapter 16: scanning on demand
-//! - chapter 17: a single-pass Pratt compiler from source to [`Chunk`]
 //! - chapter 18+: full [`Value`] enum, strings, globals, locals,
 //!   control flow, functions, closures, GC, and classes.
 //!
-//! At chapter 15 the crate exposes [`Chunk`], [`OpCode`], [`Value`], the
-//! [`disassembler`] helpers, and the [`Vm`] interpreter — enough to run
-//! any pure-numeric expression compiled by hand into bytecode. The
-//! end-to-end runner (and the umbrella binary's `--features vm` build)
-//! lights up in PR 4 alongside chapter 17 once the source-to-bytecode
-//! compiler arrives.
+//! At chapter 17 the crate exposes [`Chunk`], [`OpCode`], [`Value`], the
+//! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
+//! [`disassembler`] helpers, the [`Vm`] interpreter, and a top-level
+//! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
+//! build wires [`run_to`] into its CLI; chapter 17 evaluates a single
+//! Lox *expression* and prints the result, which is enough to drive
+//! the VM end-to-end. Statements + `print` arrive in chapter 21.
 
 pub mod chunk;
+pub mod compiler;
 pub mod disassembler;
 pub mod value;
 pub mod vm;
 
 pub use chunk::{Chunk, OpCode};
+pub use compiler::compile;
+pub use rlox_shared::error::{LoxError, Result};
 pub use value::Value;
 pub use vm::{Vm, VmError, VmResult};
+
+use std::io::Write;
+
+/// Compile and execute a Lox *expression*, writing the result followed
+/// by a newline to `out`.
+///
+/// At chapter 17 the bytecode VM only handles expression-level Lox; the
+/// surface that `rlox-tree` exposes for full programs (statements,
+/// declarations, etc.) does not exist yet. The umbrella `rlox` binary
+/// invokes this when built with `--features vm`.
+///
+/// # Errors
+///
+/// Returns every accumulated `LoxError` (scan, parse, or runtime) as a
+/// `Vec`, mirroring the tree-walk crate's reporting strategy so the CLI
+/// can pick a consistent exit code.
+pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
+    let chunk = compile(source)?;
+    let mut vm = Vm::new();
+    let value = vm.interpret(&chunk).map_err(|e| {
+        vec![LoxError::Runtime {
+            line: 0,
+            message: e.to_string(),
+        }]
+    })?;
+    // Chapter 17 renders the expression's value the same way clox's
+    // `printValue` does: just the number, terminated with a newline so
+    // line-oriented REPL clients see one result per line.
+    writeln!(out, "{value}").map_err(|e| {
+        vec![LoxError::Runtime {
+            line: 0,
+            message: e.to_string(),
+        }]
+    })?;
+    Ok(())
+}

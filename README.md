@@ -29,9 +29,9 @@ cargo install --path crates/rlox \
     --no-default-features --features vm              # install the VM
 ```
 
-The `vm` feature wires up to a working CLI in PR 4 (chapter 17, *Compiling
-Expressions*); earlier VM PRs deliver lower-level pieces (chunks, disassembler,
-stack VM with hand-written bytecode) exercised via `cargo test -p rlox-vm`.
+The `vm` feature is now wired end-to-end as of chapter 17 — `--features vm`
+evaluates a single Lox **expression** and prints the result. Statements,
+`print`, and the rest of milestone-3 surface arrive in chapter 21 onwards.
 
 ### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
@@ -64,7 +64,7 @@ stack VM with hand-written bytecode) exercised via `cargo test -p rlox-vm`.
 | 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | done |
 | 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | done |
 | 16    | 16      | Scanning on Demand (lazy `Scanner` iterator + `rlox-shared` extraction) | done |
-| 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode) | pending |
+| 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode; `--features vm` end-to-end) | done |
 | 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons)          | pending |
 | 19    | 19      | Strings (interned via `Heap`)                        | pending |
 | 20    | 20      | Hash tables — *absorbed by `std::HashMap`*           | n/a    |
