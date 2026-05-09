@@ -1,8 +1,10 @@
-//! Abstract syntax tree for Lox expressions (chapters 5–6 of the book).
+//! Abstract syntax tree for Lox expressions and statements
+//! (chapters 5–6, extended by chapter 8 with statements + variables).
 //!
-//! We use an idiomatic Rust enum + `match` rather than the book's Visitor
-//! pattern. The `Display` impl produces the parenthesised, prefix-Lisp form
-//! used by the upstream `test/expressions/parse.lox` reference output.
+//! We use idiomatic Rust enums + `match` rather than the book's Visitor
+//! pattern. The `Display` impls produce a parenthesised, prefix-Lisp form
+//! consistent with upstream `test/expressions/parse.lox` for expressions
+//! and a natural extension for statements.
 
 use std::fmt;
 
@@ -12,6 +14,10 @@ use crate::value::Value;
 /// An expression node.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
+    Assign {
+        name: Token,
+        value: Box<Expr>,
+    },
     Binary {
         left: Box<Expr>,
         op: Token,
@@ -23,17 +29,58 @@ pub enum Expr {
         op: Token,
         right: Box<Expr>,
     },
+    /// Read of a variable by name (the token carries the source location).
+    Variable(Token),
 }
 
 impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Assign { name, value } => write!(f, "(= {} {value})", name.lexeme),
             Self::Binary { left, op, right } => {
                 parenthesize(f, &op.lexeme, [left.as_ref(), right.as_ref()])
             }
             Self::Grouping(inner) => parenthesize(f, "group", [inner.as_ref()]),
             Self::Literal(value) => write!(f, "{value}"),
             Self::Unary { op, right } => parenthesize(f, &op.lexeme, [right.as_ref()]),
+            Self::Variable(name) => f.write_str(&name.lexeme),
+        }
+    }
+}
+
+/// A statement node (chapter 8).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt {
+    /// `expr;` — evaluate for side effects and discard the value.
+    Expression(Expr),
+    /// `print expr;` — evaluate and write the stringified value to the
+    /// interpreter's output sink.
+    Print(Expr),
+    /// `var name [= initializer];`
+    Var {
+        name: Token,
+        initializer: Option<Expr>,
+    },
+    /// `{ stmts... }` — introduces a new lexical scope.
+    Block(Vec<Stmt>),
+}
+
+impl fmt::Display for Stmt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Expression(e) => write!(f, "(; {e})"),
+            Self::Print(e) => write!(f, "(print {e})"),
+            Self::Var { name, initializer } => match initializer {
+                Some(e) => write!(f, "(var {} {e})", name.lexeme),
+                None => write!(f, "(var {})", name.lexeme),
+            },
+            Self::Block(stmts) => {
+                f.write_str("(block")?;
+                for s in stmts {
+                    write!(f, " {s}")?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }

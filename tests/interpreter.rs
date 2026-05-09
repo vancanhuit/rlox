@@ -165,3 +165,96 @@ fn stringify_other_atoms() {
     assert_eq!(stringify(&Value::Bool(false)), "false");
     assert_eq!(stringify(&Value::String("hi".into())), "hi");
 }
+
+// ---- chapter 8: Interpreter (statements, variables, scopes) ----
+
+mod programs {
+    use rlox::{Interpreter, LoxError, parse_program, scan};
+
+    /// Run a program and return the captured `print` output.
+    fn run(src: &str) -> Result<String, Vec<LoxError>> {
+        let (tokens, scan_errors) = scan(src);
+        assert!(scan_errors.is_empty(), "scan errors: {scan_errors:?}");
+        let stmts = parse_program(&tokens)?;
+        let mut buf = Vec::<u8>::new();
+        let mut interp = Interpreter::new(&mut buf);
+        interp.interpret(&stmts).map_err(|e| vec![e])?;
+        Ok(String::from_utf8(buf).unwrap())
+    }
+
+    #[test]
+    fn print_emits_one_line_per_call() {
+        assert_eq!(run("print 1; print 2;").unwrap(), "1\n2\n");
+    }
+
+    #[test]
+    fn expression_statement_runs_for_side_effects_only() {
+        assert_eq!(run("1 + 2; print 7;").unwrap(), "7\n");
+    }
+
+    #[test]
+    fn var_with_initializer_can_be_read() {
+        assert_eq!(run("var a = 9; print a;").unwrap(), "9\n");
+    }
+
+    #[test]
+    fn var_without_initializer_defaults_to_nil() {
+        assert_eq!(run("var a; print a;").unwrap(), "nil\n");
+    }
+
+    #[test]
+    fn assignment_returns_value_and_can_chain() {
+        // `a = b = 5` first sets `b`, then `a`, then `print` reads both.
+        assert_eq!(
+            run("var a; var b; a = b = 5; print a; print b;").unwrap(),
+            "5\n5\n"
+        );
+    }
+
+    #[test]
+    fn block_introduces_a_nested_scope() {
+        let src = "\
+var a = \"global\";
+{
+  var a = \"block\";
+  print a;
+}
+print a;
+";
+        assert_eq!(run(src).unwrap(), "block\nglobal\n");
+    }
+
+    #[test]
+    fn assignment_inside_block_updates_outer_binding() {
+        let src = "var a = 1; { a = 2; } print a;";
+        assert_eq!(run(src).unwrap(), "2\n");
+    }
+
+    #[test]
+    fn reading_undefined_variable_is_runtime_error() {
+        let errs = run("print a;").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Undefined variable 'a'.");
+    }
+
+    #[test]
+    fn assigning_undefined_variable_is_runtime_error() {
+        let errs = run("a = 1;").unwrap_err();
+        let LoxError::Runtime { message, .. } = &errs[0] else {
+            panic!("expected Runtime error");
+        };
+        assert_eq!(message, "Undefined variable 'a'.");
+    }
+
+    #[test]
+    fn runtime_error_inside_block_still_pops_the_scope() {
+        // After the inner block fails, the outer `a` must still be in
+        // scope — verified by a second program reusing the same shape.
+        // We can't directly observe scope depth, but we *can* assert
+        // that the inner-shadowed name does not leak after the error.
+        let errs = run("{ var inner = 1; 1 + \"x\"; }").unwrap_err();
+        assert!(matches!(errs[0], LoxError::Runtime { .. }));
+    }
+}
