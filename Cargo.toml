@@ -1,6 +1,6 @@
 [package]
 name = "rlox"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "A tree-walk interpreter for the Lox language, written in Rust."
