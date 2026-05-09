@@ -6,8 +6,9 @@
 //! rlox [script]
 //! ```
 //!
-//! With no arguments, drops into a line-oriented REPL. With one argument,
-//! reads the file as a Lox expression, evaluates it, and exits.
+//! With no arguments, drops into a line-oriented REPL accepting one or
+//! more `;`-terminated Lox statements per line. With one argument,
+//! reads the file as a Lox program, executes it, and exits.
 //!
 //! Exit codes (matching jlox / `EX_DATAERR` and `EX_SOFTWARE`):
 //!
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
-use rlox::{LoxError, run};
+use rlox::{LoxError, run_to};
 
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
@@ -53,12 +54,13 @@ fn run_file(path: &Path) -> ExitCode {
             return ExitCode::from(EX_USAGE);
         }
     };
-    match run(&source) {
-        Ok(output) => {
-            println!("{output}");
-            ExitCode::SUCCESS
-        }
+    let mut stdout = io::stdout().lock();
+    match run_to(&source, &mut stdout) {
+        Ok(()) => ExitCode::SUCCESS,
         Err(errors) => {
+            // Drop the lock before printing diagnostics so they don't
+            // interleave with any partial program output already flushed.
+            drop(stdout);
             report_errors(&errors);
             ExitCode::from(exit_code_for(&errors))
         }
@@ -92,10 +94,13 @@ fn run_prompt() -> ExitCode {
             continue;
         }
 
-        match run(trimmed) {
-            Ok(output) => {
-                writeln!(stdout, "{output}").ok();
-            }
+        // Each REPL line is parsed as a fresh program. Variable bindings
+        // do NOT persist across lines yet; chapter 8's REPL keeps the same
+        // semantics as the script runner. A persistent REPL environment
+        // arrives once we reorganise around `Rc<RefCell<Environment>>` in
+        // chapter 10 (closures need it anyway).
+        match run_to(trimmed, &mut stdout) {
+            Ok(()) => {}
             Err(errors) => report_errors(&errors),
         }
     }

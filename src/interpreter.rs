@@ -1,6 +1,20 @@
-//! Tree-walk interpreter for Lox expressions (chapter 7).
+//! Tree-walk interpreter (chapter 7) extended with statements + variable
+//! scoping (chapter 8).
+//!
+//! Public surface:
+//!
+//! - [`evaluate`] — evaluate a single expression in a fresh empty
+//!   environment. Convenient for unit tests and for chapter-7 callers; any
+//!   variable read or assignment will fail with `Undefined variable` since
+//!   no bindings exist.
+//! - [`Interpreter`] — stateful walker that owns an [`Environment`] and a
+//!   writer for `print` output. Use [`Interpreter::interpret`] to run a
+//!   program (a slice of [`Stmt`]).
 
-use crate::ast::Expr;
+use std::io::Write;
+
+use crate::ast::{Expr, Stmt};
+use crate::environment::Environment;
 use crate::error::LoxError;
 use crate::token::{Token, TokenType};
 use crate::value::Value;
@@ -97,19 +111,42 @@ fn eval_binary(op: &Token, left: Value, right: Value) -> Result<Value, LoxError>
     }
 }
 
-/// Evaluate `expr` to a [`Value`] or return a runtime error.
+/// Evaluate `expr` in a fresh, empty [`Environment`]. Convenience used by
+/// expression-only tests; variable reads / assignments fail with
+/// `Undefined variable` because no bindings have been introduced.
+///
+/// # Errors
+///
+/// Returns a runtime error on type mismatches or undefined variables.
 pub fn evaluate(expr: &Expr) -> Result<Value, LoxError> {
+    let mut env = Environment::new();
+    evaluate_in(expr, &mut env)
+}
+
+/// Evaluate `expr` against a caller-supplied [`Environment`]. Public so
+/// external tests and downstream chapters can drive expression evaluation
+/// with a populated scope.
+///
+/// # Errors
+///
+/// Returns a runtime error on type mismatches or undefined variables.
+pub fn evaluate_in(expr: &Expr, env: &mut Environment) -> Result<Value, LoxError> {
     match expr {
         Expr::Literal(v) => Ok(v.clone()),
-        Expr::Grouping(inner) => evaluate(inner),
+        Expr::Grouping(inner) => evaluate_in(inner, env),
         Expr::Unary { op, right } => {
-            let r = evaluate(right)?;
+            let r = evaluate_in(right, env)?;
             eval_unary(op, &r)
         }
         Expr::Binary { left, op, right } => {
-            let l = evaluate(left)?;
-            let r = evaluate(right)?;
+            let l = evaluate_in(left, env)?;
+            let r = evaluate_in(right, env)?;
             eval_binary(op, l, r)
+        }
+        Expr::Variable(name) => env.get(name),
+        Expr::Assign { name, value } => {
+            let v = evaluate_in(value, env)?;
+            env.assign(name, v)
         }
     }
 }
@@ -131,5 +168,73 @@ pub fn stringify(value: &Value) -> String {
             }
         }
         Value::String(s) => s.clone(),
+    }
+}
+
+/// Stateful tree-walker. Owns the variable [`Environment`] and a writer
+/// that receives `print` output. Construct with [`Interpreter::new`] and
+/// drive with [`Interpreter::interpret`].
+pub struct Interpreter<'w> {
+    env: Environment,
+    out: &'w mut dyn Write,
+}
+
+impl<'w> Interpreter<'w> {
+    /// Create an interpreter that writes `print` output to `out`.
+    pub fn new(out: &'w mut dyn Write) -> Self {
+        Self {
+            env: Environment::new(),
+            out,
+        }
+    }
+
+    /// Run a program (slice of statements), short-circuiting on the first
+    /// runtime error. State (the [`Environment`]) persists across calls so
+    /// the same `Interpreter` can drive a multi-line REPL.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first runtime error encountered.
+    pub fn interpret(&mut self, stmts: &[Stmt]) -> Result<(), LoxError> {
+        for s in stmts {
+            self.execute(s)?;
+        }
+        Ok(())
+    }
+
+    fn execute(&mut self, stmt: &Stmt) -> Result<(), LoxError> {
+        match stmt {
+            Stmt::Expression(e) => {
+                evaluate_in(e, &mut self.env)?;
+                Ok(())
+            }
+            Stmt::Print(e) => {
+                let v = evaluate_in(e, &mut self.env)?;
+                // Mirror jlox's `System.out.println`, which silently
+                // discards IO errors (e.g. broken pipe).
+                let _ = writeln!(self.out, "{}", stringify(&v));
+                Ok(())
+            }
+            Stmt::Var { name, initializer } => {
+                let value = match initializer {
+                    Some(e) => evaluate_in(e, &mut self.env)?,
+                    None => Value::Nil,
+                };
+                self.env.define(name.lexeme.clone(), value);
+                Ok(())
+            }
+            Stmt::Block(stmts) => self.execute_block(stmts),
+        }
+    }
+
+    fn execute_block(&mut self, stmts: &[Stmt]) -> Result<(), LoxError> {
+        self.env.push();
+        // `try_for_each` short-circuits on the first error, mirroring the
+        // book's early-return behaviour without an explicit IIFE wrapper.
+        let result = stmts.iter().try_for_each(|s| self.execute(s));
+        // Always pop, even on error, so the environment isn't left
+        // permanently nested after a runtime fault.
+        self.env.pop();
+        result
     }
 }
