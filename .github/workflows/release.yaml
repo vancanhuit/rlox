@@ -24,6 +24,13 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Opt every JS-based action into the Node 24 runtime ahead of the
+  # June 2 2026 GitHub Actions deadline. Actions explicitly bumped to
+  # their Node 24 major below; this env var covers any transitive
+  # JS-based dependency that hasn't shipped a Node 24 release yet.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build (${{ matrix.target }})
@@ -74,7 +81,7 @@ jobs:
           ls -la dist
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rlox-${{ matrix.target }}
           path: |
@@ -98,7 +105,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
@@ -123,7 +130,7 @@ jobs:
           OUTPUT: dist/CHANGELOG.md
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           body_path: dist/CHANGELOG.md
