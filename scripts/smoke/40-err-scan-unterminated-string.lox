@@ -1,0 +1,2 @@
+print "oops;
+// expect_compile_error: Unterminated string.

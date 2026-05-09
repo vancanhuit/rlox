@@ -1,0 +1,2 @@
+print noSuch;
+// expect_runtime_error: Undefined variable 'noSuch'.

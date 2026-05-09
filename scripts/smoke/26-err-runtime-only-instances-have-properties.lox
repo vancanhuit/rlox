@@ -1,0 +1,3 @@
+var x = 1;
+print x.field;
+// expect_runtime_error: Only instances have properties.

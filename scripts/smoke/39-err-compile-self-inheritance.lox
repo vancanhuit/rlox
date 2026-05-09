@@ -1,0 +1,2 @@
+class Foo < Foo {}
+// expect_compile_error: A class can't inherit from itself.

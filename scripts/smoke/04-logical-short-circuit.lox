@@ -1,0 +1,5 @@
+// `and` / `or` return the operand value, not a coerced boolean.
+print "hi" or 2;            // expect: hi
+print 1 and 2;              // expect: 2
+print nil or "fallback";    // expect: fallback
+print false and "unreached"; // expect: false

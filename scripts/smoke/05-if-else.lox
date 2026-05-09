@@ -1,0 +1,8 @@
+if (true) print "then"; else print "else";    // expect: then
+if (false) print "then"; else print "else";   // expect: else
+// Dangling else binds to the nearest if.
+if (true) if (false) print "no"; else print "inner-else"; // expect: inner-else
+// Lox truthiness: only nil and false are falsy.
+if (0) print "0 is truthy"; else print "0 is falsy";  // expect: 0 is truthy
+if ("") print "empty truthy"; else print "empty falsy"; // expect: empty truthy
+if (nil) print "nil truthy"; else print "nil falsy";    // expect: nil falsy

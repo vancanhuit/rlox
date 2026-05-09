@@ -1,0 +1,10 @@
+// The chapter-11 motivating example: a function that reads `a` must
+// not see a sibling `var a` declared after the function but in the
+// same enclosing block. The resolver makes this work.
+var a = "global";
+{
+  fun showA() { print a; }
+  showA();          // expect: global
+  var a = "block";
+  showA();          // expect: global
+}

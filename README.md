@@ -11,10 +11,11 @@ enum-driven AST instead of the book's Visitor pattern).
 
 ## Status
 
-**Milestone 1 complete** — chapters 4–7 of the book (scanner, hand-written
-parser, expression evaluator) plus a REPL / script-runner CLI. Statements,
-variables, control flow, functions, resolver and classes (chapters 8–13) are
-deferred to a future milestone.
+**Milestones 1 and 2 complete** — the full jlox tree-walk interpreter from
+*Crafting Interpreters* (chapters 4–13). The bytecode VM in Part III of the
+book is out of scope for this port.
+
+### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
 | Phase | Module(s)                       | Status |
 | ----- | ------------------------------- | ------ |
@@ -26,6 +27,17 @@ deferred to a future milestone.
 | 5     | `interpreter`                   | done   |
 | 6     | `lib.rs` / `main.rs` CLI        | done   |
 | 7     | README polish, CONTRIBUTING     | done   |
+
+### Milestone 2 — chapters 8–13 (statements, classes)
+
+| Phase | Chapter | Topic                                              | Status |
+| ----- | ------- | -------------------------------------------------- | ------ |
+| 8     | 8       | Statements, `var`, `print`, blocks, assignment     | done   |
+| 9     | 9       | `if`/`else`, `while`, `for`, short-circuit `and`/`or` | done   |
+| 10    | 10      | Functions, closures, `return`, native `clock()`    | done   |
+| 11    | 11      | Resolver (static lexical-depth + diagnostics)      | done   |
+| 12    | 12      | Classes, methods, properties, `this`, `init`       | done   |
+| 13    | 13      | Inheritance, `super`                               | done   |
 
 ## Requirements
 
@@ -52,14 +64,18 @@ cargo run --quiet -- --version
 
 ### REPL example
 
+The REPL parses every line as a Lox program and persists state across
+prompts (variable bindings, function declarations, and the global
+`clock()` survive between lines):
+
 ```text
 $ cargo run --quiet
-> 1 + 2 * 3
+> var x = 1 + 2 * 3;
+> print x;
 7
-> "hello, " + "world"
-hello, world
-> (5 - (3 - 1)) + -1
-2
+> fun greet(name) { print "hi, " + name; }
+> greet("world");
+hi, world
 > ^D
 ```
 
@@ -68,18 +84,158 @@ hello, world
 The full pipeline is exposed at the crate root for embedding:
 
 ```rust
-use rlox::{run, scan, parse, evaluate, stringify};
+use rlox::{run, scan, parse_program, resolve, Interpreter};
 
-// One-shot:
-assert_eq!(run("(1 + 2) * 3").unwrap(), "9");
+// One-shot — `run` returns captured `print` output.
+assert_eq!(
+    run("var x = (1 + 2) * 3; print x;").unwrap(),
+    "9\n",
+);
 
-// Or step through manually:
-let (tokens, scan_errors) = scan("1 + 2");
+// Or drive the four stages (scan → parse → resolve → interpret) manually:
+let (tokens, scan_errors) = scan("print 1 + 2;");
 assert!(scan_errors.is_empty());
-let expr = parse(&tokens).unwrap();
-let value = evaluate(&expr).unwrap();
-assert_eq!(stringify(&value), "3");
+let stmts  = parse_program(&tokens).unwrap();
+let locals = resolve(&stmts).unwrap();
+let mut buf = Vec::<u8>::new();
+let mut interp = Interpreter::new(&mut buf);
+interp.merge_locals(locals);
+interp.interpret(&stmts).unwrap();
+assert_eq!(String::from_utf8(buf).unwrap(), "3\n");
 ```
+
+## Lox showcase
+
+A few snippets you can paste into the REPL or save to a `.lox` file and run
+with `cargo run --quiet -- script.lox`. They progress from the book's
+chapter-8 basics to chapter-13 inheritance.
+
+### Variables and control flow (chapters 8–9)
+
+```lox
+var n = 10;
+var sum = 0;
+for (var i = 1; i <= n; i = i + 1) {
+  sum = sum + i;
+}
+print sum;          // 55
+
+// Block scope shadows the outer binding without leaking back out.
+var greeting = "outer";
+{
+  var greeting = "inner";
+  print greeting;   // inner
+}
+print greeting;     // outer
+```
+
+### Short-circuit logical operators (chapter 9)
+
+`and` / `or` return the *operand value*, not a coerced boolean — and never
+evaluate the right side once the answer is known:
+
+```lox
+print "hi" or 2;    // hi
+print 1 and 2;      // 2
+print nil or "fallback"; // fallback
+```
+
+### Functions, recursion, and `clock` (chapter 10)
+
+```lox
+fun fib(n) {
+  if (n < 2) return n;
+  return fib(n - 2) + fib(n - 1);
+}
+
+var start = clock();
+print fib(20);                       // 6765
+print clock() - start;               // elapsed seconds
+```
+
+### Closures (chapter 10)
+
+The book's classic `makeCounter` — `count` captures the surrounding `i`:
+
+```lox
+fun makeCounter() {
+  var i = 0;
+  fun count() {
+    i = i + 1;
+    return i;
+  }
+  return count;
+}
+
+var c = makeCounter();
+print c();  // 1
+print c();  // 2
+print c();  // 3
+```
+
+### Closure-capture correctness via the resolver (chapter 11)
+
+Re-declaring `a` after a closure captures it must *not* leak the new
+binding into the closure. This is the chapter-11 motivating fragment, and
+the resolver makes it work out of the box:
+
+```lox
+var a = "global";
+{
+  fun showA() { print a; }
+  showA();          // global
+  var a = "block";
+  showA();          // global  (NOT "block")
+}
+```
+
+### Classes, methods, `this`, and `init` (chapter 12)
+
+```lox
+class Point {
+  init(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+  distance(other) {
+    var dx = this.x - other.x;
+    var dy = this.y - other.y;
+    return dx * dx + dy * dy;        // squared
+  }
+}
+
+var origin = Point(0, 0);
+var p      = Point(3, 4);
+print p.distance(origin);            // 25
+```
+
+### Inheritance and `super` (chapter 13)
+
+The book's canonical `super` walkthrough — `C().test()` runs `B.test`
+which dispatches `super.method()` to `A.method`, *not* `B.method`:
+
+```lox
+class A { method() { print "A method"; } }
+
+class B < A {
+  method() { print "B method"; }
+  test()   { super.method(); }
+}
+
+class C < B {}
+
+C().test();  // A method
+```
+
+### Static error caught by the resolver
+
+```lox
+class Cake { init() { return 42; } }
+//                    ^^^^^^^^^^ Can't return a value from an initializer.
+```
+
+The resolver flags this before any code runs, so no half-built `Cake`
+escapes into the runtime.
 
 ### Exit codes
 
@@ -92,6 +248,28 @@ Matching jlox / `sysexits.h`:
 | 64   | runtime usage error (file unreadable)  |
 | 65   | compile error (scan / parse)           |
 | 70   | runtime error                          |
+
+### Smoke tests
+
+A Python harness drives the binary against a corpus of `.lox` programs
+under [`scripts/smoke/`](scripts/smoke/), each annotated with
+`// expect:` / `// expect_runtime_error:` / `// expect_compile_error:`
+directives (same convention as the upstream `craftinginterpreters` test
+suite). Useful as a quick end-to-end check covering happy paths,
+runtime errors, and resolver-time static errors:
+
+```sh
+scripts/smoke_test.py                # build release + run every .lox
+scripts/smoke_test.py --debug        # use the debug artifact
+scripts/smoke_test.py --filter class # only files with "class" in the name
+scripts/smoke_test.py --no-build     # reuse an existing artifact
+```
+
+The same harness runs in CI on every push and pull request as part of the
+`Build (x86_64-unknown-linux-gnu)` and `Build (aarch64-unknown-linux-gnu)`
+required checks, so a regression that only manifests end-to-end (REPL
+prompt, exit codes, stderr formatting) blocks merges just like a unit-test
+failure.
 
 ## Testing approach
 

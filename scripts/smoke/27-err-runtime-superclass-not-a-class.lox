@@ -1,0 +1,3 @@
+var NotAClass = 1;
+class Sub < NotAClass {}
+// expect_runtime_error: Superclass must be a class.

@@ -1,0 +1,19 @@
+// Chapter 13 reference fragment: super dispatches to the *next class up*
+// in the chain, not the receiver's class.
+class A { method() { print "A method"; } }
+
+class B < A {
+  method() { print "B method"; }
+  test()   { super.method(); }
+}
+
+class C < B {}
+
+C().test();             // expect: A method
+
+// Inherited methods see `this` as the actual receiver.
+class Animal { name() { return this.label; } }
+class Dog < Animal {}
+var d = Dog();
+d.label = "Rex";
+print d.name();         // expect: Rex

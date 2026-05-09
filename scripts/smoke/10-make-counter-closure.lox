@@ -1,0 +1,18 @@
+// The book's chapter-10 closure example.
+fun makeCounter() {
+  var i = 0;
+  fun count() {
+    i = i + 1;
+    return i;
+  }
+  return count;
+}
+var c = makeCounter();
+print c();  // expect: 1
+print c();  // expect: 2
+print c();  // expect: 3
+
+// A second counter is independent of the first.
+var d = makeCounter();
+print d();  // expect: 1
+print c();  // expect: 4

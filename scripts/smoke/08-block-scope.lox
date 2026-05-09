@@ -1,0 +1,7 @@
+// Inner block shadows outer; outer is restored after.
+var greeting = "outer";
+{
+  var greeting = "inner";
+  print greeting;     // expect: inner
+}
+print greeting;       // expect: outer
