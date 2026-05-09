@@ -2,16 +2,16 @@
 //!
 //! Reference cases are transcribed from the upstream Crafting Interpreters
 //! test suite (e.g. `test/scanning/numbers.lox`). The scanner is exposed via
-//! `rlox::scan(source)` which returns `(tokens, errors)` so callers can
+//! `rlox_tree::scan(source)` which returns `(tokens, errors)` so callers can
 //! continue past lexical errors (matching jlox's behaviour).
 
-use rlox::{Literal, LoxError, TokenType, scan};
+use rlox_tree::{Literal, LoxError, TokenType, scan};
 
-fn types(tokens: &[rlox::Token]) -> Vec<TokenType> {
+fn types(tokens: &[rlox_tree::Token]) -> Vec<TokenType> {
     tokens.iter().map(|t| t.ttype).collect()
 }
 
-fn dump(tokens: &[rlox::Token]) -> String {
+fn dump(tokens: &[rlox_tree::Token]) -> String {
     tokens
         .iter()
         .map(ToString::to_string)

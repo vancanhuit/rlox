@@ -4,14 +4,14 @@
 //!
 //! 1. *Static-error* tests that drive `resolve(stmts)` directly and
 //!    assert the error message and the location token.
-//! 2. *End-to-end* tests via [`rlox::run`] that exercise resolver-driven
+//! 2. *End-to-end* tests via [`rlox_tree::run`] that exercise resolver-driven
 //!    behaviour visible to programs — most importantly the chapter-11
 //!    closure-capture fix.
 
-use rlox::{LoxError, parse_program, resolve, run, scan};
+use rlox_tree::{LoxError, parse_program, resolve, run, scan};
 
 /// Scan + parse a source string into a `Vec<Stmt>` for resolver-only tests.
-fn parse(src: &str) -> Vec<rlox::Stmt> {
+fn parse(src: &str) -> Vec<rlox_tree::Stmt> {
     let (tokens, errors) = scan(src);
     assert!(errors.is_empty(), "scan errors: {errors:?}");
     parse_program(&tokens).expect("parse should succeed")

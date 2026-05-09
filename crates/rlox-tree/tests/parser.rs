@@ -1,9 +1,9 @@
 //! Phase 4 — public-API tests for the recursive-descent parser.
 //!
 //! Reference: chapter 6 test `test/expressions/parse.lox`. Source / expected
-//! output anchor the precedence and grouping behaviour of `rlox::parse`.
+//! output anchor the precedence and grouping behaviour of `rlox_tree::parse`.
 
-use rlox::{Expr, LoxError, Stmt, Value, parse, parse_program, scan};
+use rlox_tree::{Expr, LoxError, Stmt, Value, parse, parse_program, scan};
 
 /// Convenience: scan + parse a Lox expression source string.
 fn parse_str(src: &str) -> Result<Expr, LoxError> {

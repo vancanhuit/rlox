@@ -136,10 +136,20 @@ dependencies = [
 
 [[package]]
 name = "rlox"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "clap",
+ "rlox-tree",
+ "rlox-vm",
 ]
+
+[[package]]
+name = "rlox-tree"
+version = "0.3.0-dev"
+
+[[package]]
+name = "rlox-vm"
+version = "0.3.0-dev"
 
 [[package]]
 name = "strsim"

@@ -4,7 +4,7 @@
 //! semantics (truthiness, equality, arithmetic, string concatenation, error
 //! messages) follow the book.
 
-use rlox::{Expr, LoxError, Value, evaluate, parse, scan, stringify};
+use rlox_tree::{Expr, LoxError, Value, evaluate, parse, scan, stringify};
 
 fn eval_str(src: &str) -> Result<Value, LoxError> {
     let (tokens, scan_errors) = scan(src);
@@ -169,11 +169,11 @@ fn stringify_other_atoms() {
 // ---- chapter 8: Interpreter (statements, variables, scopes) ----
 
 mod programs {
-    use rlox::{Interpreter, LoxError, parse_program, resolve, scan};
+    use rlox_tree::{Interpreter, LoxError, parse_program, resolve, scan};
 
     /// Run a program (scan → parse → resolve → interpret) and return
     /// the captured `print` output. Mirrors the production pipeline used
-    /// by `rlox::run_to`.
+    /// by `rlox_tree::run_to`.
     fn run(src: &str) -> Result<String, Vec<LoxError>> {
         let (tokens, scan_errors) = scan(src);
         assert!(scan_errors.is_empty(), "scan errors: {scan_errors:?}");

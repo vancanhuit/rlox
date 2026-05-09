@@ -12,7 +12,7 @@
 
 use std::rc::Rc;
 
-use rlox::{Expr, FunctionDecl, Stmt, Token, TokenType, Value};
+use rlox_tree::{Expr, FunctionDecl, Stmt, Token, TokenType, Value};
 
 fn op(ttype: TokenType, lexeme: &'static str) -> Token {
     Token::new(ttype, lexeme, None, 1)

@@ -1,0 +1,29 @@
+[package]
+name = "rlox"
+description = "Lox language interpreter — picks tree-walk or bytecode VM at compile time via Cargo features."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "rlox"
+path = "src/main.rs"
+
+[features]
+default = ["tree"]
+# Backend selection — `tree` and `vm` are mutually exclusive. The umbrella
+# `main.rs` enforces this with a `compile_error!` guard so a misconfigured
+# build fails loudly at compile time rather than at runtime.
+tree = ["dep:rlox-tree"]
+vm = ["dep:rlox-vm"]
+
+[dependencies]
+clap = { workspace = true }
+rlox-tree = { workspace = true, optional = true }
+rlox-vm = { workspace = true, optional = true }
+
+[lints]
+workspace = true

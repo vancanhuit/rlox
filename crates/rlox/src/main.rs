@@ -1,5 +1,19 @@
 //! `rlox` — command-line entry point.
 //!
+//! The umbrella binary picks its backend at compile time via two
+//! mutually exclusive Cargo features:
+//!
+//! - `tree` (default) — the chapter 4–13 tree-walk interpreter from
+//!   [`rlox_tree`].
+//! - `vm` — the chapter 14–30 bytecode VM from [`rlox_vm`].
+//!
+//! ```text
+//! cargo build                                          # tree-walk
+//! cargo build --no-default-features --features vm      # bytecode VM
+//! cargo install --path crates/rlox \
+//!     --no-default-features --features vm              # install the VM
+//! ```
+//!
 //! Usage:
 //!
 //! ```text
@@ -15,21 +29,46 @@
 //! - `0` — success
 //! - `2` — clap usage error (unknown flag, too many args)
 //! - `64` — runtime usage error (file unreadable)
-//! - `65` — compile error (scan / parse)
+//! - `65` — compile error (scan / parse / resolve)
 //! - `70` — runtime error
+
+// Backend feature guards — the umbrella binary refuses to build with
+// neither or both backends enabled. This catches misconfigured
+// `--features` flags at compile time rather than at runtime.
+#[cfg(all(feature = "tree", feature = "vm"))]
+compile_error!(
+    "the `tree` and `vm` features are mutually exclusive; \
+     pass --no-default-features --features vm to select the VM backend"
+);
+#[cfg(not(any(feature = "tree", feature = "vm")))]
+compile_error!("enable exactly one of the `tree` or `vm` features (default: tree)");
+
+#[cfg(feature = "tree")]
+use rlox_tree as backend;
+
+// The bytecode VM gains an end-to-end runner in PR 4 (chapter 17 —
+// Compiling Expressions). Earlier PRs only deliver lower-level pieces
+// (chunks, disassembler, stack VM with hand-written bytecode), which
+// are exercised by the crate's own unit tests rather than via the CLI.
+#[cfg(feature = "vm")]
+compile_error!(
+    "the `vm` backend isn't wired to the CLI yet; it lights up in PR 4 (phase/17-expr-compiler). \
+     Use the default `tree` feature for now, or run rlox-vm's unit tests directly with \
+     `cargo test -p rlox-vm`."
+);
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use backend::{Interpreter, LoxError, parse_program, resolve, run_to, scan};
 use clap::Parser;
-use rlox::{Interpreter, LoxError, parse_program, resolve, run_to, scan};
 
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_SOFTWARE: u8 = 70;
 
-/// A Rust port of the tree-walk Lox interpreter from
+/// A Rust port of the Lox interpreter from
 /// <https://craftinginterpreters.com>.
 #[derive(Parser, Debug)]
 #[command(name = "rlox", version, about, long_about = None)]

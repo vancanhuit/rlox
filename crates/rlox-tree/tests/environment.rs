@@ -5,7 +5,7 @@
 //! These tests exercise the new API: `child()` instead of `push`/`pop`,
 //! and `&self` (interior-mutable) define/assign.
 
-use rlox::{Environment, LoxError, Token, TokenType, Value};
+use rlox_tree::{Environment, LoxError, Token, TokenType, Value};
 
 /// Build a synthetic `Identifier` token at line 1. The interpreter only
 /// reads `lexeme` and uses `line` for error reporting, so the rest can be

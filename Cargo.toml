@@ -1,28 +1,36 @@
-[package]
-name = "rlox"
-version = "0.2.0"
+[workspace]
+resolver = "3"
+members = [
+    "crates/rlox",
+    "crates/rlox-tree",
+    "crates/rlox-vm",
+]
+
+# Per-crate Cargo build (for fast development iteration on one backend)
+# is preferred; `cargo build --workspace` builds every library and the
+# umbrella binary with its default features (tree-walk).
+default-members = ["crates/rlox"]
+
+[workspace.package]
+version = "0.3.0-dev"
 edition = "2024"
 rust-version = "1.95"
-description = "A tree-walk interpreter for the Lox language, written in Rust."
 license = "MIT"
 repository = "https://github.com/vancanhuit/rlox"
 publish = false
 
-[lib]
-name = "rlox"
-path = "src/lib.rs"
+[workspace.dependencies]
+# Internal crates
+rlox-tree = { path = "crates/rlox-tree", version = "0.3.0-dev" }
+rlox-vm = { path = "crates/rlox-vm", version = "0.3.0-dev" }
 
-[[bin]]
-name = "rlox"
-path = "src/main.rs"
-
-[dependencies]
+# Third-party
 clap = { version = "4.6.1", features = ["derive"] }
 
-[lints.rust]
+[workspace.lints.rust]
 unsafe_code = "forbid"
 
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 missing_errors_doc = "allow"
