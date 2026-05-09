@@ -69,6 +69,36 @@ suite. We **re-encode** these as native Rust `#[test]` functions instead of
 running the `.lox` files directly — keeps `cargo test` self-contained, no
 submodule, no `regex` crate.
 
+## Cutting a release
+
+Releases are tag-driven. To publish `vX.Y.Z`:
+
+1. Bump `version` in [`Cargo.toml`](Cargo.toml) on `main` (squash-merge the
+   bump PR like any other change — the title `chore(release): vX.Y.Z` is fine).
+2. Tag `main` and push:
+
+   ```sh
+   git tag -a vX.Y.Z -m "vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+3. The [`Release`](.github/workflows/release.yaml) workflow fires on the tag:
+   - Builds `target/release/rlox` natively on each runner for both
+     `x86_64-unknown-linux-gnu` (on `ubuntu-latest`) and
+     `aarch64-unknown-linux-gnu` (on `ubuntu-24.04-arm`).
+   - Packages each as `rlox_vX.Y.Z_<target>.tar.gz` with a
+     per-archive `.sha256`, plus an aggregate `SHA256SUMS` listing both.
+   - Renders release notes for the `(prev_tag, this_tag]` range via
+     [`git-cliff`](https://git-cliff.org) using [`cliff.toml`](cliff.toml).
+   - Publishes a single GitHub Release with both binaries and the notes attached.
+   - Tags with a `-suffix` (e.g. `v0.1.0-beta1`) are marked as
+     prereleases automatically.
+
+Squash-merged PR titles drive the changelog grouping (`feat`, `fix`,
+`perf`, `refactor`, `revert`, `docs`, `test`, `build`, `ci`, and
+`chore(deps)` for dependabot bumps). Plain `chore` / `style` commits are
+intentionally dropped from release notes.
+
 ## Project goals
 
 This is primarily a *learning* exercise. PRs that bring the implementation

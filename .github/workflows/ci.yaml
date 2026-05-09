@@ -12,6 +12,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # Opt every JS-based action into the Node 24 runtime ahead of the
+  # June 2 2026 GitHub Actions deadline. Actions explicitly bumped to
+  # their Node 24 major below; this env var covers any transitive
+  # JS-based dependency that hasn't shipped a Node 24 release yet.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   lint-and-test:
     name: Lint and test
@@ -35,3 +42,78 @@ jobs:
 
       - name: Test
         run: cargo test --all-targets --locked
+
+  # Same target matrix as the release workflow, but produces *development*
+  # binaries on every PR and every push to main. The version label is
+  # derived from `git describe --tags --always --dirty`, falling back to
+  # `dev-<sha>` so a developer can always identify which commit a given
+  # artifact came from. Artifacts are retained for 14 days; the release
+  # workflow attaches the matching tarballs to a GitHub Release for tag
+  # pushes.
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v6
+        with:
+          # `git describe --tags` needs the full tag graph.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Per-target cache so the two matrix legs don't thrash.
+          key: ${{ matrix.target }}
+
+      - name: Resolve development version
+        id: version
+        run: |
+          set -euo pipefail
+          ver="$(git describe --tags --always --dirty 2>/dev/null || true)"
+          if [[ -z "$ver" ]]; then
+            ver="dev-${GITHUB_SHA::7}"
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Resolved development version: $ver"
+
+      - name: Build release binary
+        run: cargo build --release --locked --bin rlox
+
+      - name: Package binary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          archive="rlox_${VERSION}_${TARGET}.tar.gz"
+          stage="dist/rlox_${VERSION}_${TARGET}"
+          mkdir -p "$stage"
+          cp target/release/rlox "$stage/rlox"
+          cp README.md LICENSE "$stage/" 2>/dev/null || true
+          tar -czf "dist/$archive" -C dist "$(basename "$stage")"
+          rm -rf "$stage"
+          ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: rlox-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/rlox_*.tar.gz
+            dist/rlox_*.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
