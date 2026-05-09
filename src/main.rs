@@ -12,29 +12,36 @@
 //! Exit codes (matching jlox / `EX_DATAERR` and `EX_SOFTWARE`):
 //!
 //! - `0` — success
-//! - `64` — usage error (too many args)
+//! - `2` — clap usage error (unknown flag, too many args)
+//! - `64` — runtime usage error (file unreadable)
 //! - `65` — compile error (scan / parse)
 //! - `70` — runtime error
 
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use clap::Parser;
 use rlox::{LoxError, run};
 
 const EX_USAGE: u8 = 64;
 const EX_DATAERR: u8 = 65;
 const EX_SOFTWARE: u8 = 70;
 
+/// A Rust port of the tree-walk Lox interpreter from
+/// <https://craftinginterpreters.com>.
+#[derive(Parser, Debug)]
+#[command(name = "rlox", version, about, long_about = None)]
+struct Cli {
+    /// Path to a Lox script. If omitted, drops into the REPL.
+    script: Option<PathBuf>,
+}
+
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.len() {
-        0 => run_prompt(),
-        1 => run_file(Path::new(&args[0])),
-        _ => {
-            eprintln!("Usage: rlox [script]");
-            ExitCode::from(EX_USAGE)
-        }
+    let cli = Cli::parse();
+    match cli.script.as_deref() {
+        None => run_prompt(),
+        Some(path) => run_file(path),
     }
 }
 

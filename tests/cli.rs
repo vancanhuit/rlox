@@ -91,6 +91,24 @@ fn binary_exits_65_on_compile_error() {
 }
 
 #[test]
+fn binary_help_flag_works() {
+    let out = Command::new(rlox_bin()).arg("--help").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Usage: rlox"));
+    assert!(stdout.contains("--help"));
+}
+
+#[test]
+fn binary_version_flag_prints_crate_version() {
+    let out = Command::new(rlox_bin()).arg("--version").output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.starts_with("rlox "));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+}
+
+#[test]
 fn binary_exits_70_on_runtime_error() {
     let path = write_lox("runtime_err", r#"1 + "x""#);
     let out = Command::new(rlox_bin()).arg(&path).output().unwrap();
