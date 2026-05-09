@@ -200,3 +200,62 @@ fn while_stmt_display() {
     };
     assert_eq!(s.to_string(), "(while true (print 1.0))");
 }
+
+// ---- chapter 10: Call / Function / Return display ----
+
+#[test]
+fn call_expr_display_with_no_arguments() {
+    let e = Expr::Call {
+        callee: Box::new(Expr::Variable(name("clock"))),
+        paren: Token::new(TokenType::RightParen, ")", None, 1),
+        arguments: vec![],
+    };
+    assert_eq!(e.to_string(), "(call clock)");
+}
+
+#[test]
+fn call_expr_display_with_arguments() {
+    let e = Expr::Call {
+        callee: Box::new(Expr::Variable(name("add"))),
+        paren: Token::new(TokenType::RightParen, ")", None, 1),
+        arguments: vec![n(1.0), n(2.0)],
+    };
+    assert_eq!(e.to_string(), "(call add 1.0 2.0)");
+}
+
+#[test]
+fn function_stmt_display_with_no_params() {
+    let s = Stmt::Function {
+        name: name("greet"),
+        params: vec![],
+        body: vec![Stmt::Print(Expr::Literal(Value::String("hi".into())))],
+    };
+    assert_eq!(s.to_string(), "(fun greet () (print hi))");
+}
+
+#[test]
+fn function_stmt_display_with_params_and_body() {
+    let s = Stmt::Function {
+        name: name("add"),
+        params: vec![name("a"), name("b")],
+        body: vec![Stmt::Return {
+            keyword: Token::new(TokenType::Return, "return", None, 1),
+            value: Some(Expr::Variable(name("a"))),
+        }],
+    };
+    assert_eq!(s.to_string(), "(fun add (a b) (return a))");
+}
+
+#[test]
+fn return_stmt_display_with_and_without_value() {
+    let bare = Stmt::Return {
+        keyword: Token::new(TokenType::Return, "return", None, 1),
+        value: None,
+    };
+    let valued = Stmt::Return {
+        keyword: Token::new(TokenType::Return, "return", None, 1),
+        value: Some(n(1.0)),
+    };
+    assert_eq!(bare.to_string(), "(return)");
+    assert_eq!(valued.to_string(), "(return 1.0)");
+}

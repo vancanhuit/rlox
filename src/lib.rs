@@ -11,6 +11,7 @@
 use std::io::Write;
 
 pub mod ast;
+pub mod callable;
 pub mod environment;
 pub mod error;
 pub mod interpreter;
@@ -20,6 +21,7 @@ pub mod token;
 pub mod value;
 
 pub use ast::{Expr, Stmt};
+pub use callable::{Callable, FunctionDecl, LoxFunction, NativeFn};
 pub use environment::Environment;
 pub use error::{LoxError, Result};
 pub use interpreter::{Interpreter, evaluate, evaluate_in, stringify};

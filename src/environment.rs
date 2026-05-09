@@ -1,93 +1,116 @@
-//! Lexically scoped variable environment (chapter 8).
+//! Lexically scoped variable environment (chapter 8, reworked in chapter 10
+//! around `Rc<RefCell<Scope>>` parent pointers so closures can outlive
+//! their declaring scope).
 //!
-//! Implemented as a stack of hash maps: the bottom is the global scope, each
-//! `{ ... }` block pushes a fresh scope, exiting the block pops it. This is
-//! the simplest design that supports chapter 8's nested-block semantics.
+//! An `Environment` is a thin handle (`Rc`) over a `Scope { values, parent }`
+//! cell. Cloning an `Environment` is a refcount bump; mutation goes through
+//! interior mutability so all the read/write methods take `&self`.
 //!
-//! Chapter 10 will need to share a captured environment between a closure
-//! and its enclosing scope, at which point this module will be reworked
-//! around `Rc<RefCell<Scope>>` parent pointers. For chapters 8–9 the stack
-//! suffices because no value outlives its declaring scope.
+//! Lookup walks from the innermost scope outward via the `parent` chain;
+//! `define` always adds to the current scope; `assign` walks outward and
+//! errors at the global root if the name is unknown.
+//!
+//! # Why the rework was needed
+//!
+//! Chapter 8 used a `Vec<HashMap>` stack inside the interpreter because no
+//! value escaped its declaring scope. Chapter 10 introduces functions, and
+//! a function captures the environment in which it was *defined*; that
+//! environment must remain reachable after the surrounding block exits.
+//! `Rc<RefCell<Scope>>` is the textbook solution and matches jlox's
+//! `Environment(enclosing)` constructor.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::error::LoxError;
 use crate::token::Token;
 use crate::value::Value;
 
-/// A stack of scopes. The first element is the global scope and is always
-/// present; pushing creates a new innermost scope, popping discards it.
-#[derive(Debug, Default, Clone)]
+/// A handle to a variable scope. Cloning is cheap (refcount bump) and
+/// shared mutation goes through interior `RefCell`.
+#[derive(Debug, Clone, Default)]
 pub struct Environment {
-    scopes: Vec<HashMap<String, Value>>,
+    inner: Rc<RefCell<Scope>>,
+}
+
+#[derive(Debug, Default)]
+struct Scope {
+    values: HashMap<String, Value>,
+    /// `None` for the global scope, `Some(parent)` for any nested scope.
+    parent: Option<Environment>,
 }
 
 impl Environment {
-    /// Construct an environment containing only the global scope.
+    /// Construct a fresh global environment with no parent.
     #[must_use]
     pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a child environment whose parent is `self`. Callers typically
+    /// use this when entering a `{ ... }` block, when binding a function's
+    /// parameters, or when capturing a closure.
+    #[must_use]
+    pub fn child(&self) -> Self {
         Self {
-            scopes: vec![HashMap::new()],
+            inner: Rc::new(RefCell::new(Scope {
+                values: HashMap::new(),
+                parent: Some(self.clone()),
+            })),
         }
     }
 
-    /// Push a fresh innermost scope (entering a `{ ... }` block).
-    pub fn push(&mut self) {
-        self.scopes.push(HashMap::new());
+    /// Define a variable in this scope. Re-declaration in the same scope
+    /// shadows the previous binding (matches jlox `Environment.define`).
+    pub fn define(&self, name: impl Into<String>, value: Value) {
+        self.inner.borrow_mut().values.insert(name.into(), value);
     }
 
-    /// Pop the innermost scope. The global scope is never popped.
-    pub fn pop(&mut self) {
-        debug_assert!(self.scopes.len() > 1, "must not pop the global scope");
-        self.scopes.pop();
-    }
-
-    /// Define a variable in the innermost scope. Re-declaration in the same
-    /// scope shadows the previous binding (matches jlox `Environment.define`).
-    pub fn define(&mut self, name: impl Into<String>, value: Value) {
-        let scope = self
-            .scopes
-            .last_mut()
-            .expect("environment always has a global scope");
-        scope.insert(name.into(), value);
-    }
-
-    /// Look up a variable, searching from innermost to outermost.
+    /// Look up a variable, walking outward through parent scopes.
     ///
     /// # Errors
     ///
-    /// Returns a runtime error if no scope contains a binding for `name`.
+    /// Returns a runtime error if the variable is undefined.
     pub fn get(&self, name: &Token) -> Result<Value, LoxError> {
-        for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(&name.lexeme) {
-                return Ok(v.clone());
-            }
+        // Try the current scope first.
+        if let Some(v) = self.inner.borrow().values.get(&name.lexeme) {
+            return Ok(v.clone());
         }
-        Err(LoxError::runtime(
-            name,
-            format!("Undefined variable '{}'.", name.lexeme),
-        ))
+        // Drop the borrow before recursing so a deeply nested chain
+        // doesn't accumulate live `Ref` borrows.
+        let parent = self.inner.borrow().parent.clone();
+        match parent {
+            Some(p) => p.get(name),
+            None => Err(LoxError::runtime(
+                name,
+                format!("Undefined variable '{}'.", name.lexeme),
+            )),
+        }
     }
 
-    /// Assign to an existing variable (innermost wins). Does not create a
-    /// new binding; assignment to an undeclared name is a runtime error.
-    ///
-    /// Returns the assigned value so callers can use assignment as an
-    /// expression.
+    /// Assign to an existing variable; walks outward, never creates a new
+    /// binding. Returns the assigned value so callers can use assignment
+    /// as an expression.
     ///
     /// # Errors
     ///
-    /// Returns a runtime error if no enclosing scope declares `name`.
-    pub fn assign(&mut self, name: &Token, value: Value) -> Result<Value, LoxError> {
-        for scope in self.scopes.iter_mut().rev() {
-            if scope.contains_key(&name.lexeme) {
-                scope.insert(name.lexeme.clone(), value.clone());
+    /// Returns a runtime error if the variable is undefined.
+    pub fn assign(&self, name: &Token, value: Value) -> Result<Value, LoxError> {
+        {
+            let mut scope = self.inner.borrow_mut();
+            if scope.values.contains_key(&name.lexeme) {
+                scope.values.insert(name.lexeme.clone(), value.clone());
                 return Ok(value);
             }
         }
-        Err(LoxError::runtime(
-            name,
-            format!("Undefined variable '{}'.", name.lexeme),
-        ))
+        let parent = self.inner.borrow().parent.clone();
+        match parent {
+            Some(p) => p.assign(name, value),
+            None => Err(LoxError::runtime(
+                name,
+                format!("Undefined variable '{}'.", name.lexeme),
+            )),
+        }
     }
 }
