@@ -42,7 +42,9 @@ fn runtime_error_displays_message_then_line_frame() {
     let err = LoxError::runtime(&plus, "Operands must be two numbers or two strings.");
     assert_eq!(
         err.to_string(),
-        "Operands must be two numbers or two strings.\n[line 12]"
+        "\
+Operands must be two numbers or two strings.
+[line 12]"
     );
 }
 
