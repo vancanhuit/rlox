@@ -8,10 +8,9 @@
 use std::fmt;
 use std::rc::Rc;
 
-use crate::ast::Stmt;
+use crate::ast::FunctionDecl;
 use crate::environment::Environment;
 use crate::error::LoxError;
-use crate::token::Token;
 use crate::value::Value;
 
 /// Native functions implemented in Rust. The interpreter registers these
@@ -32,21 +31,14 @@ impl fmt::Debug for NativeFn {
 }
 
 /// User-defined function declaration plus the environment it captured at
-/// definition time. The `decl` is shared via `Rc` so calling a function
-/// many times doesn't reclone the AST.
+/// definition time. The `decl` is shared via `Rc` directly with the
+/// originating [`crate::ast::Stmt::Function`] node so a call doesn't clone
+/// the body — the resolver-recorded `Expr` addresses inside `body` stay
+/// valid for the lifetime of the function value.
 #[derive(Debug)]
 pub struct LoxFunction {
     pub decl: Rc<FunctionDecl>,
     pub closure: Environment,
-}
-
-/// The static parts of a function declaration — the AST identity that
-/// makes equality cheap (`Rc::ptr_eq`).
-#[derive(Debug)]
-pub struct FunctionDecl {
-    pub name: Token,
-    pub params: Vec<Token>,
-    pub body: Vec<Stmt>,
 }
 
 /// A unified callable: either a Rust-implemented native or a user

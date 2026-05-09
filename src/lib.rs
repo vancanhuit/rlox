@@ -16,16 +16,18 @@ pub mod environment;
 pub mod error;
 pub mod interpreter;
 pub mod parser;
+pub mod resolver;
 pub mod scanner;
 pub mod token;
 pub mod value;
 
-pub use ast::{Expr, Stmt};
-pub use callable::{Callable, FunctionDecl, LoxFunction, NativeFn};
+pub use ast::{Expr, FunctionDecl, Stmt};
+pub use callable::{Callable, LoxFunction, NativeFn};
 pub use environment::Environment;
 pub use error::{LoxError, Result};
 pub use interpreter::{Interpreter, evaluate, evaluate_in, stringify};
 pub use parser::{parse, parse_program};
+pub use resolver::{Locals, resolve};
 pub use scanner::scan;
 pub use token::{Literal, Token, TokenType};
 pub use value::Value;
@@ -61,7 +63,9 @@ pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<
         return Err(scan_errors);
     }
     let stmts = parse_program(&tokens)?;
+    let locals = resolve(&stmts)?;
     let mut interp = Interpreter::new(out);
+    interp.merge_locals(locals);
     interp.interpret(&stmts).map_err(|e| vec![e])?;
     Ok(())
 }

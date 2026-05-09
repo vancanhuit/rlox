@@ -9,9 +9,22 @@
 //! and a natural extension for statements.
 
 use std::fmt;
+use std::rc::Rc;
 
 use crate::token::Token;
 use crate::value::Value;
+
+/// The static parts of a function declaration. Shared via `Rc` between
+/// the original [`Stmt::Function`] node and any [`crate::callable::LoxFunction`]
+/// values created from it. Sharing rather than cloning is important for
+/// chapter 11 — the resolver records `Expr` addresses inside `body`,
+/// and those addresses must stay valid when the function is later called.
+#[derive(Debug, PartialEq)]
+pub struct FunctionDecl {
+    pub name: Token,
+    pub params: Vec<Token>,
+    pub body: Vec<Stmt>,
+}
 
 /// An expression node.
 #[derive(Debug, Clone, PartialEq)]
@@ -100,12 +113,12 @@ pub enum Stmt {
     /// parse time into a `Block` containing a `While`, so we don't need a
     /// separate `For` variant.
     While { condition: Expr, body: Box<Stmt> },
-    /// `fun name(params) { body }` (chapter 10).
-    Function {
-        name: Token,
-        params: Vec<Token>,
-        body: Vec<Stmt>,
-    },
+    /// `fun name(params) { body }` (chapter 10). Wrapped in `Rc` so the
+    /// runtime [`LoxFunction`](crate::callable::LoxFunction) value shares
+    /// the same backing AST — keeping `Expr` addresses inside `body`
+    /// stable across function calls (the resolver in chapter 11 keys its
+    /// locals map on those addresses).
+    Function(Rc<FunctionDecl>),
     /// `return [value];` (chapter 10). `keyword` carries the source line
     /// for runtime errors; `value` is `None` when the bare keyword form
     /// is used (returns `nil`).
@@ -137,18 +150,18 @@ impl fmt::Display for Stmt {
                 None => write!(f, "(if {condition} {then_branch})"),
             },
             Self::While { condition, body } => write!(f, "(while {condition} {body})"),
-            Self::Function { name, params, body } => {
+            Self::Function(decl) => {
                 f.write_str("(fun ")?;
-                f.write_str(&name.lexeme)?;
+                f.write_str(&decl.name.lexeme)?;
                 f.write_str(" (")?;
-                for (i, p) in params.iter().enumerate() {
+                for (i, p) in decl.params.iter().enumerate() {
                     if i > 0 {
                         f.write_str(" ")?;
                     }
                     f.write_str(&p.lexeme)?;
                 }
                 f.write_str(")")?;
-                for s in body {
+                for s in &decl.body {
                     write!(f, " {s}")?;
                 }
                 f.write_str(")")
