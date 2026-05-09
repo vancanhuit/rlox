@@ -69,14 +69,21 @@ pub fn disassemble_instruction(
     match OpCode::from_byte(byte) {
         // Constant + operand pair: 2 bytes, emits the constant value.
         Some(op @ OpCode::Constant) => constant_instruction(op, chunk, offset, out),
-        // Single-byte arithmetic and control opcodes.
+        // Single-byte ops (arithmetic, comparisons, literals, return).
         Some(
             op @ (OpCode::Negate
             | OpCode::Add
             | OpCode::Subtract
             | OpCode::Multiply
             | OpCode::Divide
-            | OpCode::Return),
+            | OpCode::Return
+            | OpCode::Nil
+            | OpCode::True
+            | OpCode::False
+            | OpCode::Not
+            | OpCode::Equal
+            | OpCode::Greater
+            | OpCode::Less),
         ) => simple_instruction(op, offset, out),
         None => {
             writeln!(out, "?? {byte:#04x}")?;

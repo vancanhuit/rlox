@@ -129,10 +129,14 @@ impl Vm {
                 trace_step(chunk, ip, &self.stack, out);
             }
 
-            let byte = chunk.code[ip];
+            // The opcode lives at `op_ip`; chapter 18 introduces runtime
+            // errors which need to attribute themselves to the *opcode's*
+            // source line, not the operand byte that follows.
+            let op_ip = ip;
+            let byte = chunk.code[op_ip];
             let op = OpCode::from_byte(byte)
-                .unwrap_or_else(|| panic!("unknown opcode {byte:#04x} at offset {ip} in chunk"));
-            ip += 1;
+                .unwrap_or_else(|| panic!("unknown opcode {byte:#04x} at offset {op_ip} in chunk"));
+            ip = op_ip + 1;
 
             match op {
                 OpCode::Constant => {
@@ -141,14 +145,38 @@ impl Vm {
                     let value = chunk.constants[idx];
                     self.push(value);
                 }
-                OpCode::Negate => {
+                OpCode::Nil => self.push(Value::Nil),
+                OpCode::True => self.push(Value::Bool(true)),
+                OpCode::False => self.push(Value::Bool(false)),
+                OpCode::Not => {
                     let v = self.pop();
-                    self.push(neg(v));
+                    self.push(Value::Bool(!v.is_truthy()));
                 }
-                OpCode::Add => self.binary(|a, b| a + b),
-                OpCode::Subtract => self.binary(|a, b| a - b),
-                OpCode::Multiply => self.binary(|a, b| a * b),
-                OpCode::Divide => self.binary(|a, b| a / b),
+                OpCode::Equal => {
+                    // Polymorphic equality: mixed types compare unequal
+                    // rather than raising. `Value`'s derived PartialEq
+                    // already implements clox's rules for us (NaN-aware
+                    // for numbers, type-discriminating across variants).
+                    let b = self.pop();
+                    let a = self.pop();
+                    self.push(Value::Bool(a == b));
+                }
+                OpCode::Greater => self.binary_cmp(chunk, op_ip, |a, b| a > b)?,
+                OpCode::Less => self.binary_cmp(chunk, op_ip, |a, b| a < b)?,
+                OpCode::Negate => {
+                    let Value::Number(n) = self.pop() else {
+                        return Err(Self::runtime_error(
+                            chunk,
+                            op_ip,
+                            "Operand must be a number.",
+                        ));
+                    };
+                    self.push(Value::Number(-n));
+                }
+                OpCode::Add => self.binary_arith(chunk, op_ip, |a, b| a + b)?,
+                OpCode::Subtract => self.binary_arith(chunk, op_ip, |a, b| a - b)?,
+                OpCode::Multiply => self.binary_arith(chunk, op_ip, |a, b| a * b)?,
+                OpCode::Divide => self.binary_arith(chunk, op_ip, |a, b| a / b)?,
                 OpCode::Return => return Ok(self.pop()),
             }
         }
@@ -164,24 +192,57 @@ impl Vm {
             .expect("stack underflow: malformed bytecode (compiler bug)")
     }
 
-    fn binary<F: Fn(f64, f64) -> f64>(&mut self, op: F) {
-        // The book's order matters: `b` is popped first because it was
-        // pushed last (right-hand operand). For chapter 15 every value
-        // is a Number so we can unwrap directly; chapter 18 will grow
-        // this into a typed match returning a runtime error on misuse.
-        let b = as_number(self.pop());
-        let a = as_number(self.pop());
+    /// Binary numeric arithmetic that returns a number.
+    fn binary_arith<F: Fn(f64, f64) -> f64>(
+        &mut self,
+        chunk: &Chunk,
+        op_ip: usize,
+        op: F,
+    ) -> VmResult<()> {
+        // `b` is popped first because it was pushed last (right-hand operand).
+        let b = self.pop();
+        let a = self.pop();
+        let (Value::Number(a), Value::Number(b)) = (a, b) else {
+            return Err(Self::runtime_error(
+                chunk,
+                op_ip,
+                "Operands must be numbers.",
+            ));
+        };
         self.push(Value::Number(op(a, b)));
+        Ok(())
     }
-}
 
-fn neg(v: Value) -> Value {
-    Value::Number(-as_number(v))
-}
+    /// Binary numeric comparison that returns a boolean.
+    fn binary_cmp<F: Fn(f64, f64) -> bool>(
+        &mut self,
+        chunk: &Chunk,
+        op_ip: usize,
+        op: F,
+    ) -> VmResult<()> {
+        let b = self.pop();
+        let a = self.pop();
+        let (Value::Number(a), Value::Number(b)) = (a, b) else {
+            return Err(Self::runtime_error(
+                chunk,
+                op_ip,
+                "Operands must be numbers.",
+            ));
+        };
+        self.push(Value::Bool(op(a, b)));
+        Ok(())
+    }
 
-fn as_number(v: Value) -> f64 {
-    let Value::Number(n) = v;
-    n
+    /// Build a runtime error attributed to the source line of the
+    /// instruction at `op_ip`. Associated function (no `self`) because
+    /// it doesn't read the operand stack and clippy prefers it that way.
+    fn runtime_error(chunk: &Chunk, op_ip: usize, message: &str) -> VmError {
+        let line = chunk.lines.line_at(op_ip).unwrap_or(0);
+        VmError::Runtime {
+            line,
+            message: message.to_string(),
+        }
+    }
 }
 
 /// Format a single trace step into `out`, mimicking clox's
@@ -300,7 +361,9 @@ mod tests {
         c.write_op(OpCode::Return, 1);
 
         let mut vm = Vm::new();
-        let Value::Number(n) = vm.interpret(&c).unwrap();
+        let Value::Number(n) = vm.interpret(&c).unwrap() else {
+            panic!("expected Number");
+        };
         assert!(n.is_infinite() && n.is_sign_positive(), "got {n}");
     }
 

@@ -32,21 +32,44 @@ pub enum OpCode {
     /// `OP_CONSTANT <idx>` — push `chunk.constants[idx]` onto the stack.
     Constant = 0x01,
     /// `OP_NEGATE` — pop the top of the stack, push `-value`.
+    /// Runtime error if the operand is not a number (chapter 18).
     Negate = 0x02,
     /// `OP_ADD` — pop `b`, pop `a`, push `a + b`.
+    /// Runtime error if either operand is not a number (chapter 18).
     Add = 0x03,
     /// `OP_SUBTRACT` — pop `b`, pop `a`, push `a - b`.
+    /// Runtime error if either operand is not a number.
     Subtract = 0x04,
     /// `OP_MULTIPLY` — pop `b`, pop `a`, push `a * b`.
+    /// Runtime error if either operand is not a number.
     Multiply = 0x05,
     /// `OP_DIVIDE` — pop `b`, pop `a`, push `a / b` (IEEE-754 division;
     /// `1.0 / 0.0 == inf`, `0.0 / 0.0 == NaN`, both matching clox).
+    /// Runtime error if either operand is not a number.
     Divide = 0x06,
     /// `OP_RETURN` — return from the current function (or end the
     /// top-level program in chapter 15, which has no functions yet).
     /// In our implementation [`crate::vm::Vm::interpret`] returns the
     /// top of the stack as the program's value.
     Return = 0x07,
+    /// `OP_NIL` — push `nil`.
+    Nil = 0x08,
+    /// `OP_TRUE` — push `true`.
+    True = 0x09,
+    /// `OP_FALSE` — push `false`.
+    False = 0x0a,
+    /// `OP_NOT` — pop `v`, push `!is_truthy(v)`. Always succeeds —
+    /// every value has a defined truthiness in Lox.
+    Not = 0x0b,
+    /// `OP_EQUAL` — pop `b`, pop `a`, push `a == b`. Polymorphic; mixed
+    /// types compare unequal rather than raising.
+    Equal = 0x0c,
+    /// `OP_GREATER` — pop `b`, pop `a`, push `a > b`. Runtime error if
+    /// either operand is not a number.
+    Greater = 0x0d,
+    /// `OP_LESS` — pop `b`, pop `a`, push `a < b`. Runtime error if
+    /// either operand is not a number.
+    Less = 0x0e,
 }
 
 impl OpCode {
@@ -63,6 +86,13 @@ impl OpCode {
             0x05 => Some(Self::Multiply),
             0x06 => Some(Self::Divide),
             0x07 => Some(Self::Return),
+            0x08 => Some(Self::Nil),
+            0x09 => Some(Self::True),
+            0x0a => Some(Self::False),
+            0x0b => Some(Self::Not),
+            0x0c => Some(Self::Equal),
+            0x0d => Some(Self::Greater),
+            0x0e => Some(Self::Less),
             _ => None,
         }
     }
@@ -78,6 +108,13 @@ impl OpCode {
             Self::Multiply => "OP_MULTIPLY",
             Self::Divide => "OP_DIVIDE",
             Self::Return => "OP_RETURN",
+            Self::Nil => "OP_NIL",
+            Self::True => "OP_TRUE",
+            Self::False => "OP_FALSE",
+            Self::Not => "OP_NOT",
+            Self::Equal => "OP_EQUAL",
+            Self::Greater => "OP_GREATER",
+            Self::Less => "OP_LESS",
         }
     }
 }
