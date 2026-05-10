@@ -24,17 +24,19 @@ use rlox_shared::scanner::Scanner;
 use rlox_shared::token::{Literal, Token, TokenType};
 
 use crate::chunk::{Chunk, OpCode};
+use crate::heap::Heap;
 use crate::value::Value;
 
 /// Compile `source` into a self-contained [`Chunk`] terminated with
-/// [`OpCode::Return`].
+/// [`OpCode::Return`], paired with the [`Heap`] that backs any object
+/// constants the chunk references (chapter 19: string literals).
 ///
 /// # Errors
 ///
 /// Returns every accumulated `LoxError` (scan errors from the lexer
 /// plus parse errors from this compiler), mirroring jlox's
 /// "report-everything-then-fail" strategy.
-pub fn compile(source: &str) -> Result<Chunk, Vec<LoxError>> {
+pub fn compile(source: &str) -> Result<(Chunk, Heap), Vec<LoxError>> {
     let mut c = Compiler::new(source);
     c.advance(); // prime `current`
     c.expression();
@@ -42,7 +44,7 @@ pub fn compile(source: &str) -> Result<Chunk, Vec<LoxError>> {
     c.emit_op(OpCode::Return);
 
     if c.errors.is_empty() {
-        Ok(c.chunk)
+        Ok((c.chunk, c.heap))
     } else {
         Err(c.errors)
     }
@@ -98,6 +100,10 @@ enum ParseFn {
     /// Parses `nil`, `true`, `false`. The token type discriminates which
     /// `OP_NIL` / `OP_TRUE` / `OP_FALSE` opcode is emitted.
     Literal,
+    /// Parses a string literal. The string body is interned into the
+    /// compiler's [`Heap`] and a `OP_CONSTANT <idx>` instruction is
+    /// emitted with a [`Value::Obj`] payload.
+    String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +138,12 @@ const fn rule_for(t: TokenType) -> ParseRule {
         },
         TokenType::Number => ParseRule {
             prefix: ParseFn::Number,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
+        // Chapter 19 — string literals.
+        TokenType::String => ParseRule {
+            prefix: ParseFn::String,
             infix: ParseFn::None,
             precedence: Precedence::None,
         },
@@ -179,6 +191,10 @@ struct Compiler<'src> {
     /// One-token lookahead.
     current: Option<Token>,
     chunk: Chunk,
+    /// Heap that backs any [`Value::Obj`] entries emitted into
+    /// `chunk.constants`. Handed off to the VM at the end of
+    /// compilation.
+    heap: Heap,
     errors: Vec<LoxError>,
     /// While in panic mode, errors are discarded until we synchronise.
     panic_mode: bool,
@@ -191,6 +207,7 @@ impl<'src> Compiler<'src> {
             previous: None,
             current: None,
             chunk: Chunk::new(),
+            heap: Heap::new(),
             errors: Vec::new(),
             panic_mode: false,
         }
@@ -315,6 +332,7 @@ impl<'src> Compiler<'src> {
             ParseFn::Binary => self.binary(),
             ParseFn::Number => self.number(),
             ParseFn::Literal => self.literal(),
+            ParseFn::String => self.string(),
         }
     }
 
@@ -338,6 +356,17 @@ impl<'src> Compiler<'src> {
             unreachable!("scanner attaches Literal::Number to every Number token");
         };
         self.emit_constant(Value::Number(*n));
+    }
+
+    fn string(&mut self) {
+        // The scanner has already stripped the surrounding quotes and
+        // stored the raw body in `Literal::String`. Allocate it on the
+        // VM heap and emit a constant referencing the new handle.
+        let Some(Literal::String(s)) = self.previous_token().literal.as_ref() else {
+            unreachable!("scanner attaches Literal::String to every String token");
+        };
+        let handle = self.heap.alloc_string(s.clone());
+        self.emit_constant(Value::Obj(handle));
     }
 
     fn grouping(&mut self) {
@@ -428,8 +457,8 @@ mod tests {
     /// Convenience: compile + run, returning the value at the top of
     /// the stack at `OP_RETURN`.
     fn eval(src: &str) -> Value {
-        let chunk = compile(src).expect("compile clean");
-        Vm::new().interpret(&chunk).expect("runs clean")
+        let (chunk, mut heap) = compile(src).expect("compile clean");
+        Vm::new().interpret(&chunk, &mut heap).expect("runs clean")
     }
 
     #[test]
@@ -547,14 +576,14 @@ mod chapter_18_tests {
     use crate::vm::{Vm, VmError};
 
     fn eval(src: &str) -> Value {
-        let chunk = compile(src).expect("compile clean");
-        Vm::new().interpret(&chunk).expect("runs clean")
+        let (chunk, mut heap) = compile(src).expect("compile clean");
+        Vm::new().interpret(&chunk, &mut heap).expect("runs clean")
     }
 
     fn eval_err(src: &str) -> VmError {
-        let chunk = compile(src).expect("compile clean");
+        let (chunk, mut heap) = compile(src).expect("compile clean");
         Vm::new()
-            .interpret(&chunk)
+            .interpret(&chunk, &mut heap)
             .expect_err("expected runtime error")
     }
 
@@ -623,7 +652,9 @@ mod chapter_18_tests {
 
     #[test]
     fn arithmetic_on_non_numbers_is_runtime_error() {
-        let VmError::Runtime { message, .. } = eval_err("1 + nil");
+        // `-` (and `*`, `/`) keep the chapter-18 numeric-only contract
+        // even after chapter 19 overloads `+` for string concatenation.
+        let VmError::Runtime { message, .. } = eval_err("1 - nil");
         assert_eq!(message, "Operands must be numbers.");
     }
 
@@ -643,10 +674,165 @@ mod chapter_18_tests {
 
     #[test]
     fn runtime_error_line_attribution_is_correct() {
-        // The `+` is on line 3, so the error's line should be 3.
-        let chunk = compile("1\n + \nnil").expect("compile clean");
-        let VmError::Runtime { line, message } = Vm::new().interpret(&chunk).expect_err("rt err");
+        // The `-` is on line 3, so the error's line should be 3.
+        // (Using `-` rather than `+` keeps the assertion's expected
+        // message stable across chapter 19, which overloads `+` to
+        // also accept strings.)
+        let (chunk, mut heap) = compile("1\n - \nnil").expect("compile clean");
+        let VmError::Runtime { line, message } =
+            Vm::new().interpret(&chunk, &mut heap).expect_err("rt err");
         assert_eq!(message, "Operands must be numbers.");
         assert_eq!(line, 3);
+    }
+}
+
+#[cfg(test)]
+mod chapter_19_tests {
+    //! Chapter 19 — Strings: literals, concatenation, content equality,
+    //! type errors when `+` mixes strings and numbers.
+
+    use super::*;
+    use crate::heap::Obj;
+    use crate::vm::{Vm, VmError};
+
+    /// Compile + run, returning both the result value and the heap so
+    /// the test can dereference any returned `Value::Obj`.
+    fn run(src: &str) -> (Value, crate::heap::Heap) {
+        let (chunk, mut heap) = compile(src).expect("compile clean");
+        let v = Vm::new().interpret(&chunk, &mut heap).expect("runs clean");
+        (v, heap)
+    }
+
+    fn run_err(src: &str) -> VmError {
+        let (chunk, mut heap) = compile(src).expect("compile clean");
+        Vm::new()
+            .interpret(&chunk, &mut heap)
+            .expect_err("expected runtime error")
+    }
+
+    #[test]
+    fn string_literal_evaluates_to_obj_string() {
+        let (v, heap) = run("\"hello\"");
+        let Value::Obj(h) = v else {
+            panic!("expected Obj, got {v:?}");
+        };
+        assert_eq!(heap.as_str(h), Some("hello"));
+    }
+
+    #[test]
+    fn empty_string_literal_works() {
+        let (v, heap) = run("\"\"");
+        let Value::Obj(h) = v else {
+            panic!("expected Obj");
+        };
+        assert_eq!(heap.as_str(h), Some(""));
+    }
+
+    #[test]
+    fn string_concatenation_via_plus() {
+        let (v, heap) = run("\"foo\" + \"bar\"");
+        let Value::Obj(h) = v else {
+            panic!("expected Obj");
+        };
+        assert_eq!(heap.as_str(h), Some("foobar"));
+    }
+
+    #[test]
+    fn three_way_concatenation_is_left_associative() {
+        // `("a" + "b") + "c"` — same shape as numeric `1 + 2 + 3`.
+        let (v, heap) = run("\"a\" + \"b\" + \"c\"");
+        let Value::Obj(h) = v else {
+            panic!("expected Obj");
+        };
+        assert_eq!(heap.as_str(h), Some("abc"));
+    }
+
+    #[test]
+    fn equal_operator_compares_string_contents() {
+        // Two distinct allocations of "abc" — pre-interning, they have
+        // distinct handles but `==` must still return true.
+        let (v, _heap) = run("\"abc\" == \"abc\"");
+        assert_eq!(v, Value::Bool(true));
+
+        let (v, _heap) = run("\"abc\" == \"xyz\"");
+        assert_eq!(v, Value::Bool(false));
+    }
+
+    #[test]
+    fn bang_equal_on_strings_negates_content_equality() {
+        let (v, _heap) = run("\"abc\" != \"abc\"");
+        assert_eq!(v, Value::Bool(false));
+        let (v, _heap) = run("\"abc\" != \"xyz\"");
+        assert_eq!(v, Value::Bool(true));
+    }
+
+    #[test]
+    fn equal_across_different_types_is_false_not_an_error() {
+        // String vs number / bool / nil — never raises, always false.
+        let (v, _) = run("\"1\" == 1");
+        assert_eq!(v, Value::Bool(false));
+        let (v, _) = run("\"true\" == true");
+        assert_eq!(v, Value::Bool(false));
+        let (v, _) = run("\"\" == nil");
+        assert_eq!(v, Value::Bool(false));
+    }
+
+    #[test]
+    fn plus_on_string_and_number_is_runtime_error() {
+        let VmError::Runtime { message, .. } = run_err("\"foo\" + 1");
+        assert_eq!(message, "Operands must be two numbers or two strings.");
+    }
+
+    #[test]
+    fn plus_on_two_nils_is_runtime_error() {
+        let VmError::Runtime { message, .. } = run_err("nil + nil");
+        assert_eq!(message, "Operands must be two numbers or two strings.");
+    }
+
+    #[test]
+    fn ordering_op_on_strings_remains_a_runtime_error() {
+        // `<` / `>` are numeric-only in Lox, even after chapter 19. clox
+        // produces "Operands must be numbers." — our VM matches.
+        let VmError::Runtime { message, .. } = run_err("\"a\" < \"b\"");
+        assert_eq!(message, "Operands must be numbers.");
+    }
+
+    #[test]
+    fn concatenation_allocates_a_new_object() {
+        // The result handle must differ from either operand handle —
+        // chapter 19 isn't interning yet, so concat always allocates.
+        let (chunk, mut heap) = compile("\"a\" + \"b\"").expect("compile");
+        let pre_objs = heap.len();
+        let v = Vm::new().interpret(&chunk, &mut heap).expect("runs");
+        // Compile time alloc'd 2 strings; concat alloc'd 1 more.
+        assert_eq!(heap.len(), pre_objs + 1);
+        let Value::Obj(h) = v else {
+            panic!("expected Obj");
+        };
+        assert_eq!(heap.as_str(h), Some("ab"));
+    }
+
+    #[test]
+    fn strings_are_truthy_via_bang() {
+        let (v, _) = run("!\"\"");
+        assert_eq!(v, Value::Bool(false)); // empty string is truthy → !"" is false
+        let (v, _) = run("!\"x\"");
+        assert_eq!(v, Value::Bool(false));
+    }
+
+    #[test]
+    fn compile_emits_string_constant_with_obj_payload() {
+        // Cross-check between the compiler and heap: a single string
+        // literal pushes one Obj into the heap and one constant into
+        // the chunk.
+        let (chunk, heap) = compile("\"hi\"").expect("compile");
+        assert_eq!(heap.len(), 1);
+        assert_eq!(chunk.constants.len(), 1);
+        let Value::Obj(h) = chunk.constants[0] else {
+            panic!("expected Obj constant");
+        };
+        match heap.get(h) {
+            Obj::Str(s) => assert_eq!(s, "hi"),
+        }
     }
 }

@@ -80,3 +80,35 @@ fn run_to_propagates_compile_error_for_trailing_garbage() {
         "errors were: {errs:?}"
     );
 }
+
+// ---------- Chapter 19 — Strings (end-to-end through run_to) ----------
+
+#[test]
+fn run_to_renders_string_literal_verbatim() {
+    // Chapter 19 strings render via the heap-aware Display so the
+    // user sees the actual content, not a `<obj#N>` placeholder.
+    assert_eq!(run("\"hello\"").unwrap(), "hello\n");
+}
+
+#[test]
+fn run_to_concatenates_strings() {
+    assert_eq!(run("\"foo\" + \"bar\"").unwrap(), "foobar\n");
+}
+
+#[test]
+fn run_to_string_equality_renders_bool() {
+    assert_eq!(run("\"abc\" == \"abc\"").unwrap(), "true\n");
+}
+
+#[test]
+fn run_to_string_plus_number_is_runtime_error() {
+    let errs = run("\"a\" + 1").expect_err("expected runtime error");
+    assert!(
+        errs.iter().any(|e| matches!(
+            e,
+            LoxError::Runtime { message, .. }
+                if message == "Operands must be two numbers or two strings."
+        )),
+        "errors were: {errs:?}"
+    );
+}

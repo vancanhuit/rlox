@@ -66,7 +66,7 @@ evaluates a single Lox **expression** and prints the result. Statements,
 | 16    | 16      | Scanning on Demand (lazy `Scanner` iterator + `rlox-shared` extraction) | done |
 | 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode; `--features vm` end-to-end) | done |
 | 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons, runtime type errors) | done |
-| 19    | 19      | Strings (interned via `Heap`)                        | pending |
+| 19    | 19      | Strings (safe handle-based `Heap`, `Obj::Str`, content equality, `+` overload) | done |
 | 20    | 20      | Hash tables — *absorbed by `std::HashMap`*           | n/a    |
 | 21    | 21      | Global Variables                                     | pending |
 | 22    | 22      | Local Variables                                      | pending |

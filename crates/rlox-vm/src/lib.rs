@@ -21,11 +21,13 @@
 pub mod chunk;
 pub mod compiler;
 pub mod disassembler;
+pub mod heap;
 pub mod value;
 pub mod vm;
 
 pub use chunk::{Chunk, OpCode};
 pub use compiler::compile;
+pub use heap::{Handle, Heap, Obj};
 pub use rlox_shared::error::{LoxError, Result};
 pub use value::Value;
 pub use vm::{Vm, VmError, VmResult};
@@ -46,15 +48,17 @@ use std::io::Write;
 /// `Vec`, mirroring the tree-walk crate's reporting strategy so the CLI
 /// can pick a consistent exit code.
 pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
-    let chunk = compile(source)?;
+    let (chunk, mut heap) = compile(source)?;
     let mut vm = Vm::new();
-    let value = vm.interpret(&chunk).map_err(|e| vec![vm_to_lox(e)])?;
+    let value = vm
+        .interpret(&chunk, &mut heap)
+        .map_err(|e| vec![vm_to_lox(e)])?;
     // Chapter 17+ renders the expression's value the same way clox's
     // `printValue` does (whole numbers as `42`, fractions natural,
-    // booleans as `true`/`false`, the singleton as `nil`), terminated
-    // with a newline so line-oriented REPL clients see one result per
-    // line.
-    writeln!(out, "{value}").map_err(|e| {
+    // booleans as `true`/`false`, the singleton as `nil`, strings
+    // verbatim), terminated with a newline so line-oriented REPL
+    // clients see one result per line.
+    writeln!(out, "{}", value.display(&heap)).map_err(|e| {
         vec![LoxError::Runtime {
             line: 0,
             message: e.to_string(),
