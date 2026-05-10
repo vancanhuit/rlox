@@ -32,7 +32,8 @@ use std::fmt::{self, Write};
 
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction;
-use crate::value::Value;
+use crate::heap::{Heap, Obj};
+use crate::value::{Value, values_equal};
 
 /// A runtime error surfaced by the VM.
 ///
@@ -98,8 +99,8 @@ impl Vm {
     /// unknown opcode, missing terminating `OP_RETURN`). These are
     /// compiler bugs, not runtime errors, and matching clox we abort
     /// rather than try to recover.
-    pub fn interpret(&mut self, chunk: &Chunk) -> VmResult<Value> {
-        self.run(chunk, None::<&mut String>)
+    pub fn interpret(&mut self, chunk: &Chunk, heap: &mut Heap) -> VmResult<Value> {
+        self.run(chunk, heap, None::<&mut String>)
     }
 
     /// Like [`Self::interpret`], but write a clox-style execution trace
@@ -113,12 +114,18 @@ impl Vm {
     pub fn interpret_with_trace<W: Write>(
         &mut self,
         chunk: &Chunk,
+        heap: &mut Heap,
         trace: &mut W,
     ) -> VmResult<Value> {
-        self.run(chunk, Some(trace))
+        self.run(chunk, heap, Some(trace))
     }
 
-    fn run<W: Write>(&mut self, chunk: &Chunk, mut trace: Option<&mut W>) -> VmResult<Value> {
+    fn run<W: Write>(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        mut trace: Option<&mut W>,
+    ) -> VmResult<Value> {
         // Reset the stack between programs so a `Vm` can be reused. We
         // reuse the allocation rather than reallocating.
         self.stack.clear();
@@ -154,12 +161,14 @@ impl Vm {
                 }
                 OpCode::Equal => {
                     // Polymorphic equality: mixed types compare unequal
-                    // rather than raising. `Value`'s derived PartialEq
-                    // already implements clox's rules for us (NaN-aware
-                    // for numbers, type-discriminating across variants).
+                    // rather than raising. The helper dereferences
+                    // object handles through the heap so two distinct
+                    // allocations of the same string compare equal
+                    // (chapter 21 will swap that out for pointer
+                    // equality once strings are interned).
                     let b = self.pop();
                     let a = self.pop();
-                    self.push(Value::Bool(a == b));
+                    self.push(Value::Bool(values_equal(a, b, heap)));
                 }
                 OpCode::Greater => self.binary_cmp(chunk, op_ip, |a, b| a > b)?,
                 OpCode::Less => self.binary_cmp(chunk, op_ip, |a, b| a < b)?,
@@ -173,7 +182,7 @@ impl Vm {
                     };
                     self.push(Value::Number(-n));
                 }
-                OpCode::Add => self.binary_arith(chunk, op_ip, |a, b| a + b)?,
+                OpCode::Add => self.op_add(chunk, op_ip, heap)?,
                 OpCode::Subtract => self.binary_arith(chunk, op_ip, |a, b| a - b)?,
                 OpCode::Multiply => self.binary_arith(chunk, op_ip, |a, b| a * b)?,
                 OpCode::Divide => self.binary_arith(chunk, op_ip, |a, b| a / b)?,
@@ -192,7 +201,45 @@ impl Vm {
             .expect("stack underflow: malformed bytecode (compiler bug)")
     }
 
-    /// Binary numeric arithmetic that returns a number.
+    /// Chapter 19 `OP_ADD`: dispatches on the operand types so the
+    /// same opcode covers `1 + 2` (numeric addition) and `"a" + "b"`
+    /// (string concatenation). Anything else is a runtime error
+    /// matching clox: `Operands must be two numbers or two strings.`
+    fn op_add(&mut self, chunk: &Chunk, op_ip: usize, heap: &mut Heap) -> VmResult<()> {
+        let b = self.pop();
+        let a = self.pop();
+        match (a, b) {
+            (Value::Number(a), Value::Number(b)) => {
+                self.push(Value::Number(a + b));
+                Ok(())
+            }
+            (Value::Obj(ah), Value::Obj(bh)) => {
+                // Both must currently be strings — chapter 19's only
+                // object kind. Other object kinds (functions, classes)
+                // do not concatenate, so a future kind-mismatch falls
+                // through to the same `must be two strings` error.
+                match (heap.get(ah), heap.get(bh)) {
+                    (Obj::Str(a), Obj::Str(b)) => {
+                        let mut concat = String::with_capacity(a.len() + b.len());
+                        concat.push_str(a);
+                        concat.push_str(b);
+                        let h = heap.alloc_string(concat);
+                        self.push(Value::Obj(h));
+                        Ok(())
+                    }
+                }
+            }
+            _ => Err(Self::runtime_error(
+                chunk,
+                op_ip,
+                "Operands must be two numbers or two strings.",
+            )),
+        }
+    }
+
+    /// Binary numeric arithmetic (`-`, `*`, `/`) that returns a number.
+    /// `+` has its own helper because chapter 19 overloads it for
+    /// strings.
     fn binary_arith<F: Fn(f64, f64) -> f64>(
         &mut self,
         chunk: &Chunk,
@@ -253,14 +300,24 @@ impl Vm {
 /// 0000  123 OP_ADD
 /// ```
 fn trace_step(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn Write) {
+    // The trace's stack rendering uses the bare Display (not the
+    // heap-aware adapter), so any object handle prints as `<obj#N>`.
+    // The book's chapter-15 trace tests still pass because they only
+    // exercise numeric values; chapter 19 adds new heap-aware tests
+    // through different surfaces.
+    let _ = trace_inner(chunk, ip, stack, out);
+}
+
+fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn Write) -> fmt::Result {
     // 10 spaces to align with the `0000` offset column under the
     // following disassembled instruction.
-    let _ = write!(out, "          ");
+    write!(out, "          ")?;
     for v in stack {
-        let _ = write!(out, "[ {v} ]");
+        write!(out, "[ {v} ]")?;
     }
-    let _ = writeln!(out);
-    let _ = disassemble_instruction(chunk, ip, out);
+    writeln!(out)?;
+    disassemble_instruction(chunk, ip, out)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -281,7 +338,8 @@ mod tests {
     fn return_pops_top_of_stack() {
         let c = return_constant(42.0);
         let mut vm = Vm::new();
-        assert_eq!(vm.interpret(&c).unwrap(), Value::Number(42.0));
+        let mut heap = Heap::new();
+        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(42.0));
     }
 
     #[test]
@@ -294,7 +352,8 @@ mod tests {
         c.write_op(OpCode::Return, 1);
 
         let mut vm = Vm::new();
-        assert_eq!(vm.interpret(&c).unwrap(), Value::Number(-1.2));
+        let mut heap = Heap::new();
+        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(-1.2));
     }
 
     /// Reproduces the chapter 15 reference fragment `1 + 2 = 3`.
@@ -311,7 +370,8 @@ mod tests {
         c.write_op(OpCode::Return, 1);
 
         let mut vm = Vm::new();
-        assert_eq!(vm.interpret(&c).unwrap(), Value::Number(3.0));
+        let mut heap = Heap::new();
+        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(3.0));
     }
 
     /// `(1 + 2) * 3 - -4` exercises every arithmetic op + negation in
@@ -342,7 +402,8 @@ mod tests {
         c.write_op(OpCode::Return, 1);
 
         let mut vm = Vm::new();
-        assert_eq!(vm.interpret(&c).unwrap(), Value::Number(13.0));
+        let mut heap = Heap::new();
+        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(13.0));
     }
 
     #[test]
@@ -361,7 +422,8 @@ mod tests {
         c.write_op(OpCode::Return, 1);
 
         let mut vm = Vm::new();
-        let Value::Number(n) = vm.interpret(&c).unwrap() else {
+        let mut heap = Heap::new();
+        let Value::Number(n) = vm.interpret(&c, &mut heap).unwrap() else {
             panic!("expected Number");
         };
         assert!(n.is_infinite() && n.is_sign_positive(), "got {n}");
@@ -376,7 +438,8 @@ mod tests {
 
         let mut trace = String::new();
         let mut vm = Vm::new();
-        vm.interpret_with_trace(&c, &mut trace).unwrap();
+        let mut heap = Heap::new();
+        vm.interpret_with_trace(&c, &mut heap, &mut trace).unwrap();
 
         // Built with explicit `\n`s rather than a multi-line string
         // literal so the trailing whitespace on the empty-stack line
@@ -393,12 +456,13 @@ mod tests {
     #[test]
     fn vm_can_be_reused_across_chunks() {
         let mut vm = Vm::new();
+        let mut heap = Heap::new();
         assert_eq!(
-            vm.interpret(&return_constant(1.0)).unwrap(),
+            vm.interpret(&return_constant(1.0), &mut heap).unwrap(),
             Value::Number(1.0)
         );
         assert_eq!(
-            vm.interpret(&return_constant(2.0)).unwrap(),
+            vm.interpret(&return_constant(2.0), &mut heap).unwrap(),
             Value::Number(2.0)
         );
         // Stack must have been drained between programs.
@@ -415,6 +479,7 @@ mod tests {
         let mut c = Chunk::new();
         c.write_op(OpCode::Return, 1);
         let mut vm = Vm::new();
-        let _ = vm.interpret(&c);
+        let mut heap = Heap::new();
+        let _ = vm.interpret(&c, &mut heap);
     }
 }
