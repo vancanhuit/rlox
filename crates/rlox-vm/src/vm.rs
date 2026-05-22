@@ -33,7 +33,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction_with_heap;
 use crate::heap::{
-    Closure, GcRoots, GcStats, Handle, Heap, NativeFunction, Obj, Upvalue, UpvalueLocation,
+    Class, Closure, GcRoots, GcStats, Handle, Heap, Instance, NativeFunction, Obj, Upvalue,
+    UpvalueLocation,
 };
 use crate::value::{Value, values_equal};
 
@@ -259,6 +260,10 @@ impl Vm {
                 self.closure(chunk, heap, frame_index);
                 self.maybe_collect(heap, chunk);
             }
+            OpCode::Class => {
+                self.class(chunk, heap, frame_index);
+                self.maybe_collect(heap, chunk);
+            }
             OpCode::Pop => {
                 self.pop();
             }
@@ -274,6 +279,8 @@ impl Vm {
             }
             OpCode::GetGlobal => self.get_global(chunk, heap, frame_index, line)?,
             OpCode::SetGlobal => self.set_global(chunk, heap, frame_index, line)?,
+            OpCode::GetProperty => self.get_property(chunk, heap, frame_index, line)?,
+            OpCode::SetProperty => self.set_property(chunk, heap, frame_index, line)?,
             OpCode::GetLocal => {
                 let slot = usize::from(self.read_byte(chunk, heap, frame_index));
                 let absolute = self.frames[frame_index].slot_start + slot;
@@ -304,6 +311,7 @@ impl Vm {
                 let arg_count = self.read_byte(chunk, heap, frame_index);
                 let callee = self.peek(usize::from(arg_count));
                 self.call_value(callee, arg_count, heap, line)?;
+                self.maybe_collect(heap, chunk);
             }
             OpCode::Nil => self.push(Value::Nil),
             OpCode::True => self.push(Value::Bool(true)),
@@ -377,6 +385,78 @@ impl Vm {
 
         let closure = heap.alloc_closure(Closure::new(function, upvalues));
         self.push(Value::Obj(closure));
+    }
+
+    fn class(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let class = heap.alloc_class(Class::new(name));
+        self.push(Value::Obj(class));
+    }
+
+    fn get_property(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let Value::Obj(instance) = self.peek(0) else {
+            return Err(Self::runtime_error_at(
+                line,
+                "Only instances have properties.",
+            ));
+        };
+        if heap.as_instance(instance).is_none() {
+            return Err(Self::runtime_error_at(
+                line,
+                "Only instances have properties.",
+            ));
+        }
+
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let value = heap
+            .as_instance(instance)
+            .expect("checked instance object above")
+            .fields
+            .get(&name)
+            .copied();
+        let Some(value) = value else {
+            return Err(Self::runtime_error_at(
+                line,
+                &format!("Undefined property '{name}'."),
+            ));
+        };
+
+        self.pop();
+        self.push(value);
+        Ok(())
+    }
+
+    fn set_property(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let Value::Obj(instance) = self.peek(1) else {
+            return Err(Self::runtime_error_at(line, "Only instances have fields."));
+        };
+        if heap.as_instance(instance).is_none() {
+            return Err(Self::runtime_error_at(line, "Only instances have fields."));
+        }
+
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let value = self.peek(0);
+        heap.as_instance_mut(instance)
+            .expect("checked instance object above")
+            .fields
+            .insert(name, value);
+
+        let value = self.pop();
+        self.pop();
+        self.push(value);
+        Ok(())
     }
 
     fn get_upvalue(&mut self, chunk: &Chunk, heap: &Heap, frame_index: usize) {
@@ -634,6 +714,16 @@ impl Vm {
         };
 
         match heap.get(handle) {
+            Obj::Class(_) => {
+                if arg_count != 0 {
+                    return Err(Self::arity_error(line, 0, arg_count));
+                }
+                let instance = heap.alloc_instance(Instance::new(handle));
+                let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+                self.stack.truncate(callee_index);
+                self.push(Value::Obj(instance));
+                Ok(())
+            }
             Obj::Closure(closure) => {
                 let function = heap
                     .as_function(closure.function)
@@ -658,10 +748,9 @@ impl Vm {
                 self.push(result);
                 Ok(())
             }
-            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) => Err(Self::runtime_error_at(
-                line,
-                "Can only call functions and classes.",
-            )),
+            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Instance(_) => Err(
+                Self::runtime_error_at(line, "Can only call functions and classes."),
+            ),
         }
     }
 
