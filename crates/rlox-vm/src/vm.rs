@@ -163,9 +163,7 @@ impl Vm {
                     // Polymorphic equality: mixed types compare unequal
                     // rather than raising. The helper dereferences
                     // object handles through the heap so two distinct
-                    // allocations of the same string compare equal
-                    // (chapter 21 will swap that out for pointer
-                    // equality once strings are interned).
+                    // allocations of the same string compare equal.
                     let b = self.pop();
                     let a = self.pop();
                     self.push(Value::Bool(values_equal(a, b, heap)));

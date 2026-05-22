@@ -5,18 +5,22 @@
 //! time; the `chunk` module covers chapter 14 (the on-disk encoding for
 //! a unit of compiled bytecode plus an offline disassembler).
 //!
-//! Subsequent chapters will add:
+//! Implemented so far:
 //!
-//! - chapter 18+: full [`Value`] enum, strings, globals, locals,
-//!   control flow, functions, closures, GC, and classes.
+//! - chapters 14-17: chunks, disassembly, stack VM, lazy scanning, and
+//!   single-pass Pratt compilation to bytecode.
+//! - chapter 18: `nil`, booleans, comparisons, truthiness, and runtime
+//!   type errors.
+//! - chapter 19: heap-backed strings, content equality, and `+`
+//!   concatenation.
 //!
-//! At chapter 17 the crate exposes [`Chunk`], [`OpCode`], [`Value`], the
+//! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
 //! [`disassembler`] helpers, the [`Vm`] interpreter, and a top-level
 //! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
-//! build wires [`run_to`] into its CLI; chapter 17 evaluates a single
-//! Lox *expression* and prints the result, which is enough to drive
-//! the VM end-to-end. Statements + `print` arrive in chapter 21.
+//! build wires [`run_to`] into its CLI. The current VM evaluates a single
+//! Lox *expression* and prints the result; statements + `print` arrive
+//! in chapter 21.
 
 pub mod chunk;
 pub mod compiler;
@@ -37,7 +41,7 @@ use std::io::Write;
 /// Compile and execute a Lox *expression*, writing the result followed
 /// by a newline to `out`.
 ///
-/// At chapter 17 the bytecode VM only handles expression-level Lox; the
+/// The bytecode VM currently only handles expression-level Lox; the
 /// surface that `rlox-tree` exposes for full programs (statements,
 /// declarations, etc.) does not exist yet. The umbrella `rlox` binary
 /// invokes this when built with `--features vm`.
@@ -53,7 +57,7 @@ pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<
     let value = vm
         .interpret(&chunk, &mut heap)
         .map_err(|e| vec![vm_to_lox(e)])?;
-    // Chapter 17+ renders the expression's value the same way clox's
+    // The VM renders the expression's value the same way clox's
     // `printValue` does (whole numbers as `42`, fractions natural,
     // booleans as `true`/`false`, the singleton as `nil`, strings
     // verbatim), terminated with a newline so line-oriented REPL

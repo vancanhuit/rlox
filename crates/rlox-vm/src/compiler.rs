@@ -100,8 +100,8 @@ enum ParseFn {
     /// Parses `nil`, `true`, `false`. The token type discriminates which
     /// `OP_NIL` / `OP_TRUE` / `OP_FALSE` opcode is emitted.
     Literal,
-    /// Parses a string literal. The string body is interned into the
-    /// compiler's [`Heap`] and a `OP_CONSTANT <idx>` instruction is
+    /// Parses a string literal. The string body is allocated in the
+    /// compiler's [`Heap`] and an `OP_CONSTANT <idx>` instruction is
     /// emitted with a [`Value::Obj`] payload.
     String,
 }

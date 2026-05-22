@@ -10,9 +10,9 @@
 //! - **Allocation** appends to the vector and returns the new index.
 //! - **Lookup** is `O(1)` via `Heap::get(handle)`.
 //! - **Equality** can dereference through the heap and compare contents
-//!   ([`values_equal`](crate::value::values_equal)). Chapter 21 will
-//!   intern strings and let the equality check fall back to pointer
-//!   identity.
+//!   ([`values_equal`](crate::value::values_equal)). This keeps string
+//!   equality correct without requiring the custom interning table from
+//!   clox chapter 20.
 //! - **Garbage collection** in chapter 26 will replace the bare `Vec`
 //!   with a free-list-friendly storage and possibly grow [`Handle`]
 //!   with a generation tag. Today the heap only grows.
@@ -45,8 +45,7 @@ impl fmt::Display for Handle {
 /// later chapters will grow this enum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Obj {
-    /// A Lox string. Backed by an owned `String`; chapter 21 will add
-    /// interning so equal strings share a single allocation.
+    /// A Lox string backed by an owned `String`.
     Str(String),
 }
 
@@ -67,7 +66,8 @@ impl Heap {
     }
 
     /// Allocate an [`Obj::Str`] containing `s` and return its handle.
-    /// Strings are stored verbatim — interning waits for chapter 21.
+    /// Strings are stored verbatim; equal contents may have distinct
+    /// handles.
     pub fn alloc_string(&mut self, s: impl Into<String>) -> Handle {
         let idx =
             u32::try_from(self.objs.len()).expect("heap exceeded u32 capacity (4 billion objects)");

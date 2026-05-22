@@ -18,8 +18,8 @@
 //!   `NaN != NaN`. The reference implementation agrees.
 //! - `Obj(a) == Obj(b)` requires dereferencing through the heap and is
 //!   exposed by [`values_equal`] rather than [`PartialEq`] because it
-//!   needs the heap as context. Chapter 21 will intern strings and
-//!   collapse this back to pointer (handle) equality.
+//!   needs the heap as context. This keeps string equality independent
+//!   of whether equal strings share an allocation.
 //! - Mixed-type comparisons are `false` rather than a runtime error;
 //!   the runtime error path is reserved for ordering (`<`, `>`) and
 //!   arithmetic, which require both operands to be numbers.
@@ -48,10 +48,9 @@ pub enum Value {
 
 /// Custom [`PartialEq`] that mirrors clox's `==`/`!=` semantics for
 /// the inline variants. `Obj == Obj` returns `true` only when the two
-/// handles are byte-identical; this is correct for chapter 21
-/// onwards once strings are interned, but in chapter 19 callers that
-/// want content equality (e.g. the `OP_EQUAL` interpreter arm) must
-/// use [`values_equal`] instead.
+/// handles are byte-identical. Callers that want Lox equality for
+/// heap-backed values (e.g. the `OP_EQUAL` interpreter arm) must use
+/// [`values_equal`] instead.
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -67,8 +66,8 @@ impl PartialEq for Value {
 /// Polymorphic equality that dereferences object handles through
 /// `heap` so two distinct allocations of `"abc"` compare equal.
 ///
-/// Chapter 21 (string interning) makes pointer equality correct on
-/// its own, at which point this helper can shrink to `a == b`.
+/// If a future interning pass guarantees one handle per string content,
+/// this helper can shrink to `a == b`.
 #[must_use]
 pub fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     match (a, b) {

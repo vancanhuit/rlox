@@ -100,9 +100,9 @@ fn binary_exits_70_on_runtime_error() {
 
 // ---- vm-only smoke tests ----
 //
-// At chapter 17 the VM build only handles a single Lox expression
-// per file/line and writes its numeric value to stdout. Once chapter
-// 21 lands these will broaden to match the tree-walk equivalents.
+// Through chapter 19 the VM build only handles a single Lox expression
+// per file/line and writes its value to stdout. Once chapter 21 lands
+// these will broaden to match the tree-walk equivalents.
 
 #[cfg(feature = "vm")]
 #[test]
