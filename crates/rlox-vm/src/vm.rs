@@ -199,6 +199,16 @@ impl Vm {
                     }
                     self.globals.insert(name, self.peek(0));
                 }
+                OpCode::GetLocal => {
+                    let slot = chunk.code[ip] as usize;
+                    ip += 1;
+                    self.push(self.stack[slot]);
+                }
+                OpCode::SetLocal => {
+                    let slot = chunk.code[ip] as usize;
+                    ip += 1;
+                    self.stack[slot] = self.peek(0);
+                }
                 OpCode::Nil => self.push(Value::Nil),
                 OpCode::True => self.push(Value::Bool(true)),
                 OpCode::False => self.push(Value::Bool(false)),
@@ -556,5 +566,27 @@ mod tests {
         let mut heap = Heap::new();
         let mut out = Vec::new();
         let _ = vm.interpret(&c, &mut heap, &mut out);
+    }
+
+    #[test]
+    fn local_get_and_set_read_stack_slots() {
+        let mut c = Chunk::new();
+        let one = c.add_constant(Value::Number(1.0));
+        let two = c.add_constant(Value::Number(2.0));
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(one, 1);
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(two, 1);
+        c.write_op(OpCode::SetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::GetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Print, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::Return, 1);
+
+        let mut heap = Heap::new();
+        assert_eq!(run_chunk(&c, &mut heap), "2\n");
     }
 }

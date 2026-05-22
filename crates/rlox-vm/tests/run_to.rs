@@ -114,3 +114,17 @@ fn run_to_handles_global_variables_and_assignment() {
     "#;
     assert_eq!(run(src).unwrap(), "global\nglobal updated\n");
 }
+
+#[test]
+fn run_to_handles_block_scoped_locals() {
+    let src = r#"
+        var a = "global";
+        {
+            var a = "block";
+            a = a + " local";
+            print a;
+        }
+        print a;
+    "#;
+    assert_eq!(run(src).unwrap(), "block local\nglobal\n");
+}

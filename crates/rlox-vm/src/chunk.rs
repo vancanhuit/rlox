@@ -70,7 +70,7 @@ pub enum OpCode {
     /// either operand is not a number.
     Less = 0x0e,
     /// `OP_POP` — discard the top stack value. Used by expression
-    /// statements and global definitions.
+    /// statements, global definitions, and locals leaving scope.
     Pop = 0x0f,
     /// `OP_PRINT` — pop and write the top stack value followed by a newline.
     Print = 0x10,
@@ -81,6 +81,10 @@ pub enum OpCode {
     GetGlobal = 0x12,
     /// `OP_SET_GLOBAL <idx>` — assign an existing global variable.
     SetGlobal = 0x13,
+    /// `OP_GET_LOCAL <slot>` — read a local from the VM stack.
+    GetLocal = 0x14,
+    /// `OP_SET_LOCAL <slot>` — assign an existing local stack slot.
+    SetLocal = 0x15,
 }
 
 impl OpCode {
@@ -109,6 +113,8 @@ impl OpCode {
             0x11 => Some(Self::DefineGlobal),
             0x12 => Some(Self::GetGlobal),
             0x13 => Some(Self::SetGlobal),
+            0x14 => Some(Self::GetLocal),
+            0x15 => Some(Self::SetLocal),
             _ => None,
         }
     }
@@ -136,6 +142,8 @@ impl OpCode {
             Self::DefineGlobal => "OP_DEFINE_GLOBAL",
             Self::GetGlobal => "OP_GET_GLOBAL",
             Self::SetGlobal => "OP_SET_GLOBAL",
+            Self::GetLocal => "OP_GET_LOCAL",
+            Self::SetLocal => "OP_SET_LOCAL",
         }
     }
 }
@@ -272,6 +280,8 @@ mod tests {
             OpCode::DefineGlobal,
             OpCode::GetGlobal,
             OpCode::SetGlobal,
+            OpCode::GetLocal,
+            OpCode::SetLocal,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -345,5 +355,7 @@ mod tests {
         assert_eq!(OpCode::Return.mnemonic(), "OP_RETURN");
         assert_eq!(OpCode::Print.mnemonic(), "OP_PRINT");
         assert_eq!(OpCode::DefineGlobal.mnemonic(), "OP_DEFINE_GLOBAL");
+        assert_eq!(OpCode::GetLocal.mnemonic(), "OP_GET_LOCAL");
+        assert_eq!(OpCode::SetLocal.mnemonic(), "OP_SET_LOCAL");
     }
 }
