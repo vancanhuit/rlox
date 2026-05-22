@@ -34,7 +34,8 @@ pub enum OpCode {
     /// Runtime error if the operand is not a number (chapter 18).
     Negate = 0x02,
     /// `OP_ADD` — pop `b`, pop `a`, push `a + b`.
-    /// Runtime error if either operand is not a number (chapter 18).
+    /// Accepts two numbers or two strings; mixed/other operands are a
+    /// runtime error.
     Add = 0x03,
     /// `OP_SUBTRACT` — pop `b`, pop `a`, push `a - b`.
     /// Runtime error if either operand is not a number.
@@ -48,8 +49,7 @@ pub enum OpCode {
     Divide = 0x06,
     /// `OP_RETURN` — return from the current function (or end the
     /// top-level program in chapter 15, which has no functions yet).
-    /// In our implementation [`crate::vm::Vm::interpret`] returns the
-    /// top of the stack as the program's value.
+    /// At top level this ends [`crate::vm::Vm::interpret`].
     Return = 0x07,
     /// `OP_NIL` — push `nil`.
     Nil = 0x08,
@@ -69,6 +69,18 @@ pub enum OpCode {
     /// `OP_LESS` — pop `b`, pop `a`, push `a < b`. Runtime error if
     /// either operand is not a number.
     Less = 0x0e,
+    /// `OP_POP` — discard the top stack value. Used by expression
+    /// statements and global definitions.
+    Pop = 0x0f,
+    /// `OP_PRINT` — pop and write the top stack value followed by a newline.
+    Print = 0x10,
+    /// `OP_DEFINE_GLOBAL <idx>` — define/redefine a global variable.
+    /// The operand names a string constant.
+    DefineGlobal = 0x11,
+    /// `OP_GET_GLOBAL <idx>` — read a global variable by string name.
+    GetGlobal = 0x12,
+    /// `OP_SET_GLOBAL <idx>` — assign an existing global variable.
+    SetGlobal = 0x13,
 }
 
 impl OpCode {
@@ -92,6 +104,11 @@ impl OpCode {
             0x0c => Some(Self::Equal),
             0x0d => Some(Self::Greater),
             0x0e => Some(Self::Less),
+            0x0f => Some(Self::Pop),
+            0x10 => Some(Self::Print),
+            0x11 => Some(Self::DefineGlobal),
+            0x12 => Some(Self::GetGlobal),
+            0x13 => Some(Self::SetGlobal),
             _ => None,
         }
     }
@@ -114,6 +131,11 @@ impl OpCode {
             Self::Equal => "OP_EQUAL",
             Self::Greater => "OP_GREATER",
             Self::Less => "OP_LESS",
+            Self::Pop => "OP_POP",
+            Self::Print => "OP_PRINT",
+            Self::DefineGlobal => "OP_DEFINE_GLOBAL",
+            Self::GetGlobal => "OP_GET_GLOBAL",
+            Self::SetGlobal => "OP_SET_GLOBAL",
         }
     }
 }
@@ -242,7 +264,15 @@ mod tests {
 
     #[test]
     fn opcode_round_trips_through_byte() {
-        for op in [OpCode::Constant, OpCode::Return] {
+        for op in [
+            OpCode::Constant,
+            OpCode::Return,
+            OpCode::Pop,
+            OpCode::Print,
+            OpCode::DefineGlobal,
+            OpCode::GetGlobal,
+            OpCode::SetGlobal,
+        ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
     }
@@ -313,5 +343,7 @@ mod tests {
     fn opcode_mnemonic_matches_clox() {
         assert_eq!(OpCode::Constant.mnemonic(), "OP_CONSTANT");
         assert_eq!(OpCode::Return.mnemonic(), "OP_RETURN");
+        assert_eq!(OpCode::Print.mnemonic(), "OP_PRINT");
+        assert_eq!(OpCode::DefineGlobal.mnemonic(), "OP_DEFINE_GLOBAL");
     }
 }

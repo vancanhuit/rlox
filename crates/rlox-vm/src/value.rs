@@ -209,8 +209,8 @@ mod tests {
         let a = heap.alloc_string("abc");
         let b = heap.alloc_string("abc");
         let c = heap.alloc_string("xyz");
-        // Distinct allocations of the same content are equal in
-        // chapter 19 (interning lands in chapter 21).
+        // Distinct allocations of the same content are equal because
+        // VM equality dereferences string handles through the heap.
         assert!(values_equal(Value::Obj(a), Value::Obj(b), &heap));
         assert!(!values_equal(Value::Obj(a), Value::Obj(c), &heap));
         // Mixed types remain unequal without raising.
