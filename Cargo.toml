@@ -13,7 +13,7 @@ members = [
 default-members = ["crates/rlox"]
 
 [workspace.package]
-version = "0.3.0-dev"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -22,9 +22,9 @@ publish = false
 
 [workspace.dependencies]
 # Internal crates
-rlox-shared = { path = "crates/rlox-shared", version = "0.3.0-dev" }
-rlox-tree = { path = "crates/rlox-tree", version = "0.3.0-dev" }
-rlox-vm = { path = "crates/rlox-vm", version = "0.3.0-dev" }
+rlox-shared = { path = "crates/rlox-shared", version = "0.3.0" }
+rlox-tree = { path = "crates/rlox-tree", version = "0.3.0" }
+rlox-vm = { path = "crates/rlox-vm", version = "0.3.0" }
 
 # Third-party
 clap = { version = "4.6.1", features = ["derive"] }
