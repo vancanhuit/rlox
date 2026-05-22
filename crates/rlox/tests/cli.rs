@@ -33,9 +33,9 @@ fn write_lox(name: &str, source: &str) -> std::path::PathBuf {
 
 // ---- tree-walk-only smoke tests ----
 //
-// These exercise the default tree-walk binary. The VM build has its own
-// chapter-21 smoke tests below because its supported language surface is
-// still narrower than the tree-walk backend.
+// These exercise the default tree-walk binary. The VM build has mirrored
+// CLI coverage below so each feature-selected binary proves its own exit
+// codes and stdout/stderr formatting.
 
 #[cfg(feature = "tree")]
 #[test]
@@ -99,10 +99,9 @@ fn binary_exits_70_on_runtime_error() {
 
 // ---- vm-only smoke tests ----
 //
-// Chapter 29 gives the VM top-level statements, globals, block-scoped
-// locals, structured control flow, first-class functions, the native
-// `clock`, closures, classes, instances, dynamic fields, methods, and
-// initializers, plus superclasses and `super`.
+// The VM backend now covers the full Part III language surface through
+// chapter 30, so these tests smoke the feature-selected binary across
+// statements, functions, closures, classes, inheritance, and errors.
 
 #[cfg(feature = "vm")]
 #[test]

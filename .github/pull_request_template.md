@@ -12,7 +12,7 @@ Examples:
 
 ## Phase / scope
 
-<!-- Reference the milestone phase if applicable, e.g. "Phase 2 - scanner.rs". -->
+<!-- Reference the milestone phase/chapter if applicable, or describe the logical scope. -->
 
 ## TDD checklist
 
@@ -20,8 +20,10 @@ Examples:
 - [ ] Implementation makes the tests pass (Green)
 - [ ] Refactor pass complete (Refactor)
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets -- -D warnings`
-- [ ] `cargo test --all-targets`
+- [ ] `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- [ ] `cargo test --workspace --all-targets --locked`
+- [ ] `cargo test -p rlox --no-default-features --features vm`
+- [ ] `cargo clippy -p rlox --no-default-features --features vm --all-targets -- -D warnings`
 - [ ] Coverage not regressed
 
 ## Notes

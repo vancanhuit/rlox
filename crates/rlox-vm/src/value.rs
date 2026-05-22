@@ -95,7 +95,7 @@ impl Value {
         !matches!(self, Self::Nil | Self::Bool(false))
     }
 
-    /// Wrap the value in a heap-aware [`Display`] adapter. Use this
+    /// Wrap the value in a heap-aware [`fmt::Display`] adapter. Use this
     /// any time a value containing an [`Obj`] handle needs to be
     /// rendered; the bare `Display` impl can only emit a placeholder
     /// for objects since it doesn't see the heap.
@@ -105,7 +105,7 @@ impl Value {
     }
 }
 
-/// Heap-aware [`Display`] adapter. Strings render verbatim (matching
+/// Heap-aware [`fmt::Display`] adapter. Strings render verbatim (matching
 /// clox's `printValue`/`printObject` for `OBJ_STRING`), callable values
 /// use clox-style angle-bracket names, and classes/instances render by
 /// class name.
@@ -164,7 +164,7 @@ impl fmt::Display for ValueDisplay<'_> {
     }
 }
 
-/// Bare [`Display`] for [`Value`]. For inline variants this matches
+/// Bare [`fmt::Display`] for [`Value`]. For inline variants this matches
 /// clox's `printValue`; for [`Value::Obj`] it falls back to a stable
 /// `obj#N` placeholder since the heap isn't in scope. Use
 /// [`Value::display`] whenever the actual contents matter.

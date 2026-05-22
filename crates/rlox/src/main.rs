@@ -4,8 +4,8 @@
 //! mutually exclusive Cargo features:
 //!
 //! - `tree` (default) — the chapter 4–13 tree-walk interpreter from
-//!   [`rlox_tree`].
-//! - `vm` — the chapter 14–30 bytecode VM from [`rlox_vm`].
+//!   `rlox_tree`.
+//! - `vm` — the chapter 14–30 bytecode VM from `rlox_vm`.
 //!
 //! ```text
 //! cargo build                                          # tree-walk

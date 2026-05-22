@@ -212,9 +212,9 @@ fn parse_bp(p: &mut Pos<'_>, min_bp: Bp) -> Result<Expr, LoxError> {
 }
 
 /// Parse a comma-separated argument list, stopping at the closing `)`.
-/// Lox caps arguments at 255 to mirror jlox's compatibility with the
-/// upcoming bytecode VM (chapters 14+); we report but don't fail on the
-/// 256th argument so the rest of the program still parses.
+/// Lox caps arguments at 255 to stay compatible with the bytecode VM's
+/// one-byte arity and argument-count operands; we report but don't fail
+/// on the 256th argument so the rest of the program still parses.
 fn call_arguments(p: &mut Pos<'_>) -> Result<Vec<Expr>, LoxError> {
     let mut args = Vec::new();
     if !p.check(TokenType::RightParen) {
@@ -572,7 +572,7 @@ fn synchronize(p: &mut Pos<'_>) {
 /// Parse a token stream into a list of top-level statements (a program).
 ///
 /// On parse failure this collects every error encountered, calling
-/// [`synchronize`] between failures so a single mistake doesn't suppress
+/// `synchronize` between failures so a single mistake doesn't suppress
 /// later diagnostics.
 ///
 /// # Errors

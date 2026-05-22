@@ -19,16 +19,19 @@ are enforced by CI so contributions stay consistent.
 
    ```sh
    cargo fmt --all -- --check
-   cargo clippy --all-targets --locked -- -D warnings
-   cargo test --all-targets --locked
+   cargo clippy --workspace --all-targets --locked -- -D warnings
+   cargo test --workspace --all-targets --locked
+   cargo test -p rlox --no-default-features --features vm
+   cargo clippy -p rlox --no-default-features --features vm --all-targets -- -D warnings
    ```
 
 4. **Open a PR against `main`.** Title must follow
    [Conventional Commits](https://www.conventionalcommits.org/), e.g.
    `feat(parser): add Pratt expression parser`. The
    `Conventional Commits` workflow validates this on every push to the PR.
-5. **Wait for CI.** Four checks must pass: `Lint and test`, `Coverage`,
-   `Audit`, `Conventional Commits`.
+5. **Wait for CI.** Required checks include `Lint and test`, `Coverage`,
+   `Audit`, `Conventional Commits`, Codecov patch status, and the release
+   binary build/smoke-test matrix for both backends and architectures.
 6. **Squash-merge.** The repository ruleset only permits squash merges, so
    the PR title becomes the single commit on `main`. Local commit messages
    during work-in-progress are not linted — only the squashed result matters.
@@ -43,8 +46,11 @@ are enforced by CI so contributions stay consistent.
 
 | Path                                              | Purpose                                  |
 | ------------------------------------------------- | ---------------------------------------- |
-| [`src/`](src/)                                    | Library + binary source                  |
-| [`tests/`](tests/)                                | Integration tests against the public API |
+| [`crates/rlox-shared`](crates/rlox-shared/)      | Tokens, scanner, and shared error types  |
+| [`crates/rlox-tree`](crates/rlox-tree/)          | Tree-walk interpreter backend            |
+| [`crates/rlox-vm`](crates/rlox-vm/)              | Bytecode VM backend                      |
+| [`crates/rlox`](crates/rlox/)                    | Feature-selected umbrella CLI            |
+| [`scripts/smoke/`](scripts/smoke/)               | End-to-end `.lox` smoke corpus           |
 | [`.github/workflows/`](.github/workflows/)        | CI pipelines (see badge in README)       |
 | [`.github/rulesets/main.json`](.github/rulesets/main.json) | Branch-protection ruleset (committed for review) |
 | [`codecov.yml`](codecov.yml)                      | Codecov thresholds and ignores           |

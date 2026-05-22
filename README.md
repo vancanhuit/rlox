@@ -4,22 +4,22 @@
 [![codecov](https://codecov.io/gh/vancanhuit/rlox/graph/badge.svg)](https://codecov.io/gh/vancanhuit/rlox)
 
 A Rust port of [*Crafting Interpreters*](https://craftinginterpreters.com/) —
-written primarily as a vehicle for learning idiomatic Rust (edition 2024,
-let-chains, `LazyLock`, hand-rolled error types, Pratt parsing, idiomatic
-enum-driven AST instead of the book's Visitor pattern).
+written as a learning project, but shaped around idiomatic Rust: edition
+2024, let-chains, `LazyLock`, hand-rolled error types, Pratt parsing, and
+enum-driven ASTs instead of the book's Visitor pattern.
 
 ## Status
 
-**Milestones 1 + 2 complete; milestone 3 in flight.**
+**Milestones 1, 2, and 3 are complete.**
 
-The repo is now a Cargo workspace with three crates and one umbrella binary
-that picks its backend at compile time:
+The repo is a Cargo workspace with three implementation crates and one
+umbrella binary that picks its backend at compile time:
 
 | Crate | Role |
 | --- | --- |
 | [`crates/rlox-shared`](crates/rlox-shared/) | Front-end primitives shared by both backends — scanner (eager `scan` and lazy `Scanner` iterator), tokens, base `LoxError`. |
-| [`crates/rlox-tree`](crates/rlox-tree/) | Tree-walk interpreter (jlox port, chapters 4–13). Released as `v0.2.0`. Depends on `rlox-shared`. |
-| [`crates/rlox-vm`](crates/rlox-vm/) | Bytecode VM (clox port, chapters 14–30). **In progress.** |
+| [`crates/rlox-tree`](crates/rlox-tree/) | Tree-walk interpreter (jlox port, chapters 4–13). Complete through inheritance and `super`; depends on `rlox-shared`. |
+| [`crates/rlox-vm`](crates/rlox-vm/) | Bytecode VM (clox port, chapters 14–30). Complete through Part III. |
 | [`crates/rlox`](crates/rlox/) | Umbrella binary. Two mutually-exclusive Cargo features (`tree` default, `vm`) select which backend the binary links to. |
 
 ```sh
@@ -29,14 +29,13 @@ cargo install --path crates/rlox \
     --no-default-features --features vm              # install the VM
 ```
 
-The `vm` feature is wired end-to-end through chapter 30 — `--features vm`
-executes top-level Lox programs with expression statements, `print`, global
-`var` declarations, global reads and assignment, block statements, and
-block-scoped local variables, plus `if`/`else`, short-circuiting `and`/`or`,
-`while`, `for`, function declarations/calls, `return`, recursion, closures,
-the native `clock`, safe handle-based mark-sweep garbage collection, classes,
-instances, dynamic fields, methods, `this`, initializers, superclasses, and
-`super`, with safe string interning as the VM's chapter 30 optimization.
+The VM backend covers the full Part III language surface: statements,
+globals, locals, control flow, functions, recursion, closures, native
+functions, classes, instances, fields, methods, `this`, initializers,
+inheritance, `super`, and safe handle-based mark-sweep garbage collection.
+Chapter 20 uses Rust's `HashMap` instead of clox's custom table, and chapter
+30 uses safe string interning instead of NaN-boxing because the workspace
+forbids unsafe code.
 
 ### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
@@ -69,10 +68,10 @@ instances, dynamic fields, methods, `this`, initializers, superclasses, and
 | 14    | 14      | Chunks of Bytecode (`OpCode`, `Chunk`, RLE lines, disassembler) | done |
 | 15    | 15      | A Virtual Machine (stack, arithmetic dispatch)       | done |
 | 16    | 16      | Scanning on Demand (lazy `Scanner` iterator + `rlox-shared` extraction) | done |
-| 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode; `--features vm` end-to-end) | done |
+| 17    | 17      | Compiling Expressions (single-pass Pratt → bytecode) | done |
 | 18    | 18      | Types of Values (`Nil`/`Bool`, comparisons, runtime type errors) | done |
 | 19    | 19      | Strings (safe handle-based `Heap`, `Obj::Str`, content equality, `+` overload) | done |
-| 20    | 20      | Hash tables — custom table skipped; use `std::HashMap` for later globals/properties | n/a |
+| 20    | 20      | Hash tables — use `std::HashMap` for globals, fields, and methods | done |
 | 21    | 21      | Global Variables (`print`, expression statements, `var`, global read/assignment) | done |
 | 22    | 22      | Local Variables (block scopes, stack slots, shadowing) | done |
 | 23    | 23      | Control flow (`if`/`while`/`for`/`and`/`or`)         | done |
@@ -98,7 +97,16 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Per-crate iteration (faster builds while working on one backend):
+The workspace command tests the default `tree` feature for the umbrella
+binary. Run the VM-feature binary checks explicitly when touching the CLI or
+backend selection:
+
+```sh
+cargo test -p rlox --no-default-features --features vm
+cargo clippy -p rlox --no-default-features --features vm --all-targets -- -D warnings
+```
+
+Per-crate iteration is faster while working on one backend:
 
 ```sh
 cargo test -p rlox-tree         # tree-walk only
@@ -110,15 +118,16 @@ cargo test -p rlox-vm           # bytecode VM only
 ```sh
 cargo run --quiet                    # REPL
 cargo run --quiet -- path/to/file.lox  # run a script
+cargo run --quiet --no-default-features --features vm -- path/to/file.lox
 cargo run --quiet -- --help          # clap-generated help
 cargo run --quiet -- --version
 ```
 
 ### REPL example
 
-The REPL parses every line as a Lox program and persists state across
-prompts (variable bindings, function declarations, and the global
-`clock()` survive between lines):
+Both backends parse every REPL line as a Lox program and persist state across
+prompts. Variable bindings, function declarations, and the global `clock()`
+survive between lines:
 
 ```text
 $ cargo run --quiet
@@ -133,7 +142,8 @@ hi, world
 
 ### Library quick-start
 
-The full pipeline is exposed at the crate root for embedding:
+The default tree-walk pipeline is exposed at the `rlox` crate root for
+embedding:
 
 ```rust
 use rlox::{run, scan, parse_program, resolve, Interpreter};
@@ -158,9 +168,9 @@ assert_eq!(String::from_utf8(buf).unwrap(), "3\n");
 
 ## Lox showcase
 
-A few snippets you can paste into the REPL or save to a `.lox` file and run
-with `cargo run --quiet -- script.lox`. They progress from the book's
-chapter-8 basics to chapter-13 inheritance.
+A few snippets you can paste into either REPL or save to a `.lox` file and run
+with `cargo run --quiet -- script.lox`. They progress from basic statements
+to classes and inheritance.
 
 ### Variables and control flow (chapters 8–9)
 
@@ -286,7 +296,7 @@ class Cake { init() { return 42; } }
 //                    ^^^^^^^^^^ Can't return a value from an initializer.
 ```
 
-The resolver flags this before any code runs, so no half-built `Cake`
+The selected backend flags this before any code runs, so no half-built `Cake`
 escapes into the runtime.
 
 ### Exit codes
@@ -303,12 +313,12 @@ Matching jlox / `sysexits.h`:
 
 ### Smoke tests
 
-A Python harness drives the binary against a corpus of `.lox` programs
-under [`scripts/smoke/`](scripts/smoke/), each annotated with
+A Python harness drives the selected binary backend against a corpus of `.lox`
+programs under [`scripts/smoke/`](scripts/smoke/), each annotated with
 `// expect:` / `// expect_runtime_error:` / `// expect_compile_error:`
 directives (same convention as the upstream `craftinginterpreters` test
 suite). Useful as a quick end-to-end check covering happy paths,
-runtime errors, and resolver-time static errors:
+runtime errors, and compile-time static errors:
 
 ```sh
 scripts/smoke_test.py                # build release + run every .lox
@@ -317,17 +327,18 @@ scripts/smoke_test.py --filter class # only files with "class" in the name
 scripts/smoke_test.py --no-build     # reuse an existing artifact
 ```
 
-The same harness runs in CI on every push and pull request as part of the
-`Build (x86_64-unknown-linux-gnu)` and `Build (aarch64-unknown-linux-gnu)`
-required checks, so a regression that only manifests end-to-end (REPL
-prompt, exit codes, stderr formatting) blocks merges just like a unit-test
+The same harness runs in CI on every push and pull request for both `tree`
+and `vm` release binaries on `x86_64-unknown-linux-gnu` and
+`aarch64-unknown-linux-gnu`, so an end-to-end regression in exit codes,
+stderr formatting, or release packaging blocks merges just like a unit-test
 failure.
 
 ## Testing approach
 
 - **Test-Driven Development** every phase — Red → Green → Refactor.
 - **Unit tests** live next to the code under `#[cfg(test)] mod tests`.
-- **Integration tests** under [`tests/`](tests/) drive the public library API.
+- **Integration tests** under each crate's `tests/` directory drive public APIs
+  and CLI behavior.
 - Reference cases (inputs + expected outputs) are transcribed from
   [munificent/craftinginterpreters/test](https://github.com/munificent/craftinginterpreters/tree/master/test);
   we re-encode them as native Rust `#[test]` functions rather than running the
@@ -337,11 +348,13 @@ failure.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow. In short:
 
-- **One branch + PR per phase.** Branch naming `phase/<n>-<slug>` (e.g. `phase/2-scanner`).
+- **One branch + PR per logical change.** Use `phase/<n>-<slug>` for milestone
+  work and Conventional-Commit-style prefixes such as `docs/<slug>`,
+  `fix/<slug>`, or `ci/<slug>` for follow-ups.
 - **Conventional Commits** are enforced on PR titles only (squash-merge means the title becomes the single commit on `main`). See [`.github/workflows/pr-title.yaml`](.github/workflows/pr-title.yaml).
 - **Branch protection** for `main` is managed via a GitHub repository ruleset committed at [`.github/rulesets/main.json`](.github/rulesets/main.json): squash-merge only, linear history, all CI checks required, no force pushes or deletions, conversation resolution required.
 - **CI** workflows under [`.github/workflows/`](.github/workflows/):
-  - `ci.yaml` — `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --all-targets --locked`.
+  - `ci.yaml` — `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, release binary builds, smoke tests, and artifact packaging for both backends.
   - `coverage-and-audit.yaml` — `cargo-llvm-cov` (uploaded to Codecov) and `cargo audit --deny warnings`.
   - `pr-title.yaml` — Conventional Commits validation.
 

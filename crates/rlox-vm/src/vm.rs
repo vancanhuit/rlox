@@ -1,10 +1,10 @@
-//! Chapter 15 — A Virtual Machine.
+//! Stack-based bytecode VM.
 //!
 //! A stack-based interpreter for [`Chunk`]s. The VM walks the byte
-//! stream one instruction at a time, pushing and popping [`Value`]s on
-//! a runtime stack. With only [`OpCode::Constant`], the four binary
-//! arithmetic ops, [`OpCode::Negate`], and [`OpCode::Return`], a chunk
-//! built by hand can already evaluate any pure-numeric expression.
+//! stream one instruction at a time, pushing and popping [`Value`]s on a
+//! runtime stack. It executes the full Part III instruction set: values,
+//! strings, globals, locals, control flow, calls, closures, classes,
+//! methods, inheritance, and `super`.
 //!
 //! Reference: clox `vm.h` / `vm.c`. Differences from clox:
 //!
@@ -39,11 +39,6 @@ use crate::heap::{
 use crate::value::{Value, values_equal};
 
 /// A runtime error surfaced by the VM.
-///
-/// Chapter 15 has no type errors yet — the only kind of value is
-/// [`Value::Number`]. The variant is reserved here so chapters 18+
-/// (where `1 + true` becomes meaningful) can grow it without
-/// retrofitting callers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmError {
     /// A runtime error tied to a source line. The `line` is looked up
@@ -56,8 +51,6 @@ impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             // clox-style: the message first, then a `[line N]` frame.
-            // chapter-15 has no actual runtime errors, so this branch
-            // is reached only by future chapters' tests.
             Self::Runtime { line, message } => write!(f, "{message}\n[line {line}]"),
         }
     }
