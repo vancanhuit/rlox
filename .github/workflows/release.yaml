@@ -1,11 +1,10 @@
 # Release pipeline.
 #
 # Triggered by pushing a semver tag of the form `v1.2.3` or `v1.2.3-beta1`.
-# Builds the rlox binary for both linux/amd64 and linux/arm64 on native
-# runners (no cross-compilation), packages each as a tarball with a
-# per-archive sha256, then aggregates everything into a single GitHub
-# Release whose body is rendered by git-cliff from the (prev_tag, this_tag]
-# range.
+# Builds the VM-backed rlox binary for both linux/amd64 and linux/arm64 on
+# native runners (no cross-compilation), packages each as a tarball with a
+# per-archive sha256, then aggregates everything into a single GitHub Release
+# whose body is rendered by git-cliff from the (prev_tag, this_tag] range.
 
 name: Release
 
@@ -62,7 +61,7 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --locked --bin rlox
+        run: cargo build --release --locked --bin rlox --no-default-features --features vm
 
       - name: Package binary
         env:

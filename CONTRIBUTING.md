@@ -89,7 +89,7 @@ Releases are tag-driven. To publish `vX.Y.Z`:
    ```
 
 3. The [`Release`](.github/workflows/release.yaml) workflow fires on the tag:
-   - Builds `target/release/rlox` natively on each runner for both
+   - Builds the VM-backed `target/release/rlox` natively on each runner for both
      `x86_64-unknown-linux-gnu` (on `ubuntu-latest`) and
      `aarch64-unknown-linux-gnu` (on `ubuntu-24.04-arm`).
    - Packages each as `rlox_vX.Y.Z_<target>.tar.gz` with a
