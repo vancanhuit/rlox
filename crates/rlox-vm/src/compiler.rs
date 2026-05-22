@@ -1,4 +1,4 @@
-//! Chapter 17 — Compiling Expressions.
+//! Chapter 21 — Global Variables.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -6,8 +6,10 @@
 //! emits opcodes as it recognises operators, mirroring clox's
 //! `compiler.c`.
 //!
-//! Only expressions are compiled in this chapter. Statements, locals,
-//! and globals arrive in chapters 21–22.
+//! Chapters 17-19 compile expression bytecode; chapter 21 grows that
+//! into a top-level program made of declarations and statements,
+//! including `print`, expression statements, global `var` declarations,
+//! global reads, and global assignment. Locals arrive in chapter 22.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -16,8 +18,7 @@
 //!
 //! Errors accumulate into a `Vec<LoxError>`. When the parser hits one,
 //! it enters "panic mode" and suppresses subsequent diagnostics until
-//! a synchronisation point — at chapter 17 that's just `EOF`; later
-//! chapters will sync on statement boundaries.
+//! a statement boundary, matching clox's synchronisation strategy.
 
 use rlox_shared::error::LoxError;
 use rlox_shared::scanner::Scanner;
@@ -27,24 +28,26 @@ use crate::chunk::{Chunk, OpCode};
 use crate::heap::Heap;
 use crate::value::Value;
 
-/// Compile `source` into a self-contained [`Chunk`] terminated with
-/// [`OpCode::Return`], paired with the [`Heap`] that backs any object
-/// constants the chunk references (chapter 19: string literals).
+/// Compile `source` into a [`Chunk`] terminated with [`OpCode::Return`].
+/// Any object constants the chunk references are allocated into `heap`;
+/// callers that execute multiple chunks with persistent VM state must
+/// keep using the same heap.
 ///
 /// # Errors
 ///
 /// Returns every accumulated `LoxError` (scan errors from the lexer
 /// plus parse errors from this compiler), mirroring jlox's
 /// "report-everything-then-fail" strategy.
-pub fn compile(source: &str) -> Result<(Chunk, Heap), Vec<LoxError>> {
-    let mut c = Compiler::new(source);
+pub fn compile(source: &str, heap: &mut Heap) -> Result<Chunk, Vec<LoxError>> {
+    let mut c = Compiler::new(source, heap);
     c.advance(); // prime `current`
-    c.expression();
-    c.consume(TokenType::Eof, "Expect end of expression.");
+    while !c.match_token(TokenType::Eof) {
+        c.declaration();
+    }
     c.emit_op(OpCode::Return);
 
     if c.errors.is_empty() {
-        Ok((c.chunk, c.heap))
+        Ok(c.chunk)
     } else {
         Err(c.errors)
     }
@@ -54,14 +57,13 @@ pub fn compile(source: &str) -> Result<(Chunk, Heap), Vec<LoxError>> {
 /// matters: `parse_precedence(p)` continues while the *next* token's
 /// infix precedence is `>= p`.
 ///
-/// Slots reserved for chapters 21+ (`Or`/`And`/`Assignment`/`Call`/
-/// `Primary`) are kept commented out so the ordering remains stable as
-/// we light them up.
+/// Slots reserved for later chapters (`Or`/`And`/`Call`/`Primary`) are
+/// kept commented out so the ordering remains stable as we light them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
     None = 0,
-    // Assignment, // =
+    Assignment = 1, // =
     // Or,         // or
     // And,        // and
     Equality = 4,   // == !=
@@ -77,7 +79,8 @@ impl Precedence {
     /// left-associative.
     const fn next_higher(self) -> Self {
         match self {
-            Self::None => Self::Equality,
+            Self::None => Self::Assignment,
+            Self::Assignment => Self::Equality,
             Self::Equality => Self::Comparison,
             Self::Comparison => Self::Term,
             Self::Term => Self::Factor,
@@ -104,6 +107,8 @@ enum ParseFn {
     /// compiler's [`Heap`] and an `OP_CONSTANT <idx>` instruction is
     /// emitted with a [`Value::Obj`] payload.
     String,
+    /// Parses a global variable read or assignment.
+    Variable,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -138,6 +143,11 @@ const fn rule_for(t: TokenType) -> ParseRule {
         },
         TokenType::Number => ParseRule {
             prefix: ParseFn::Number,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
+        TokenType::Identifier => ParseRule {
+            prefix: ParseFn::Variable,
             infix: ParseFn::None,
             precedence: Precedence::None,
         },
@@ -182,7 +192,7 @@ const fn rule_for(t: TokenType) -> ParseRule {
     }
 }
 
-struct Compiler<'src> {
+struct Compiler<'src, 'heap> {
     scanner: Scanner<'src>,
     /// Last consumed token. Many emit-opcode sites need access to it
     /// after we've moved past it (e.g. `binary` looks up the operator
@@ -192,22 +202,21 @@ struct Compiler<'src> {
     current: Option<Token>,
     chunk: Chunk,
     /// Heap that backs any [`Value::Obj`] entries emitted into
-    /// `chunk.constants`. Handed off to the VM at the end of
-    /// compilation.
-    heap: Heap,
+    /// `chunk.constants`.
+    heap: &'heap mut Heap,
     errors: Vec<LoxError>,
     /// While in panic mode, errors are discarded until we synchronise.
     panic_mode: bool,
 }
 
-impl<'src> Compiler<'src> {
-    fn new(source: &'src str) -> Self {
+impl<'src, 'heap> Compiler<'src, 'heap> {
+    fn new(source: &'src str, heap: &'heap mut Heap) -> Self {
         Self {
             scanner: Scanner::new(source),
             previous: None,
             current: None,
             chunk: Chunk::new(),
-            heap: Heap::new(),
+            heap,
             errors: Vec::new(),
             panic_mode: false,
         }
@@ -255,6 +264,14 @@ impl<'src> Compiler<'src> {
         self.current.as_ref().is_some_and(|t| t.ttype == expected)
     }
 
+    fn match_token(&mut self, expected: TokenType) -> bool {
+        if !self.check(expected) {
+            return false;
+        }
+        self.advance();
+        true
+    }
+
     fn previous_token(&self) -> &Token {
         self.previous
             .as_ref()
@@ -281,8 +298,17 @@ impl<'src> Compiler<'src> {
 
     fn emit_constant(&mut self, value: Value) {
         let idx = self.chunk.add_constant(value);
+        self.emit_constant_idx(idx);
+    }
+
+    fn emit_constant_idx(&mut self, idx: u8) {
         self.emit_op(OpCode::Constant);
         self.emit_byte(idx);
+    }
+
+    fn emit_op_with_byte(&mut self, op: OpCode, byte: u8) {
+        self.emit_op(op);
+        self.emit_byte(byte);
     }
 
     fn previous_or_current_line(&self) -> usize {
@@ -297,11 +323,10 @@ impl<'src> Compiler<'src> {
     // ---- Pratt core -----------------------------------------------------
 
     /// Parse and emit any expression. Equivalent to clox's
-    /// `expression()` — kicks off at the lowest *active* precedence
-    /// rung (chapter 18: equality; chapter 21+ will lower it to
-    /// `Assignment`).
+    /// `expression()` — kicks off at assignment, the lowest active
+    /// precedence rung in chapter 21.
     fn expression(&mut self) {
-        self.parse_precedence(Precedence::Equality);
+        self.parse_precedence(Precedence::Assignment);
     }
 
     /// Recursive precedence-climbing parser.
@@ -313,16 +338,21 @@ impl<'src> Compiler<'src> {
             self.error_at_previous("Expect expression.");
             return;
         }
-        self.run_parse_fn(prefix);
+        let can_assign = prec <= Precedence::Assignment;
+        self.run_parse_fn(prefix, can_assign);
 
         while prec <= rule_for(self.current_token().ttype).precedence {
             self.advance();
             let infix = rule_for(self.previous_token().ttype).infix;
-            self.run_parse_fn(infix);
+            self.run_parse_fn(infix, can_assign);
+        }
+
+        if can_assign && self.match_token(TokenType::Equal) {
+            self.error_at_previous("Invalid assignment target.");
         }
     }
 
-    fn run_parse_fn(&mut self, f: ParseFn) {
+    fn run_parse_fn(&mut self, f: ParseFn, can_assign: bool) {
         match f {
             ParseFn::None => {
                 unreachable!("run_parse_fn(None) — caller should have checked the rule first")
@@ -333,10 +363,75 @@ impl<'src> Compiler<'src> {
             ParseFn::Number => self.number(),
             ParseFn::Literal => self.literal(),
             ParseFn::String => self.string(),
+            ParseFn::Variable => self.variable(can_assign),
         }
     }
 
     // ---- grammar productions --------------------------------------------
+
+    fn declaration(&mut self) {
+        if self.match_token(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.panic_mode {
+            self.synchronize();
+        }
+    }
+
+    fn statement(&mut self) {
+        if self.match_token(TokenType::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after value.");
+        self.emit_op(OpCode::Print);
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after expression.");
+        self.emit_op(OpCode::Pop);
+    }
+
+    fn var_declaration(&mut self) {
+        let global = self.parse_variable("Expect variable name.");
+        if self.match_token(TokenType::Equal) {
+            self.expression();
+        } else {
+            self.emit_op(OpCode::Nil);
+        }
+        self.consume(
+            TokenType::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+        self.define_variable(global);
+    }
+
+    fn parse_variable(&mut self, message: &str) -> u8 {
+        self.consume(TokenType::Identifier, message);
+        if self.previous_token().ttype != TokenType::Identifier {
+            return 0;
+        }
+        let name = self.previous_token().clone();
+        self.identifier_constant(&name)
+    }
+
+    fn identifier_constant(&mut self, name: &Token) -> u8 {
+        let handle = self.heap.alloc_string(name.lexeme.clone());
+        self.chunk.add_constant(Value::Obj(handle))
+    }
+
+    fn define_variable(&mut self, global: u8) {
+        self.emit_op_with_byte(OpCode::DefineGlobal, global);
+    }
 
     fn literal(&mut self) {
         match self.previous_token().ttype {
@@ -367,6 +462,21 @@ impl<'src> Compiler<'src> {
         };
         let handle = self.heap.alloc_string(s.clone());
         self.emit_constant(Value::Obj(handle));
+    }
+
+    fn variable(&mut self, can_assign: bool) {
+        let name = self.previous_token().clone();
+        self.named_variable(&name, can_assign);
+    }
+
+    fn named_variable(&mut self, name: &Token, can_assign: bool) {
+        let arg = self.identifier_constant(name);
+        if can_assign && self.match_token(TokenType::Equal) {
+            self.expression();
+            self.emit_op_with_byte(OpCode::SetGlobal, arg);
+        } else {
+            self.emit_op_with_byte(OpCode::GetGlobal, arg);
+        }
     }
 
     fn grouping(&mut self) {
@@ -447,69 +557,95 @@ impl<'src> Compiler<'src> {
         self.panic_mode = true;
         self.errors.push(err);
     }
+
+    fn synchronize(&mut self) {
+        self.panic_mode = false;
+        while !self.check(TokenType::Eof) {
+            if self
+                .previous
+                .as_ref()
+                .is_some_and(|t| t.ttype == TokenType::Semicolon)
+            {
+                return;
+            }
+
+            match self.current_token().ttype {
+                TokenType::Class
+                | TokenType::Fun
+                | TokenType::Var
+                | TokenType::For
+                | TokenType::If
+                | TokenType::While
+                | TokenType::Print
+                | TokenType::Return => return,
+                _ => self.advance(),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::Vm;
+    use crate::heap::Obj;
+    use crate::vm::{Vm, VmError};
 
-    /// Convenience: compile + run, returning the value at the top of
-    /// the stack at `OP_RETURN`.
-    fn eval(src: &str) -> Value {
-        let (chunk, mut heap) = compile(src).expect("compile clean");
-        Vm::new().interpret(&chunk, &mut heap).expect("runs clean")
+    fn compile_ok(src: &str) -> (Chunk, Heap) {
+        let mut heap = Heap::new();
+        let chunk = compile(src, &mut heap).expect("compile clean");
+        (chunk, heap)
+    }
+
+    fn compile_err(src: &str) -> Vec<LoxError> {
+        let mut heap = Heap::new();
+        compile(src, &mut heap).expect_err("expected compile error")
+    }
+
+    fn run(src: &str) -> (String, Heap) {
+        let (chunk, mut heap) = compile_ok(src);
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out)
+            .expect("runs clean");
+        (String::from_utf8(out).expect("VM prints utf-8"), heap)
+    }
+
+    fn eval(expr: &str) -> String {
+        run(&format!("print {expr};")).0
+    }
+
+    fn run_err(src: &str) -> VmError {
+        let (chunk, mut heap) = compile_ok(src);
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out)
+            .expect_err("expected runtime error")
+    }
+
+    fn eval_err(expr: &str) -> VmError {
+        run_err(&format!("print {expr};"))
     }
 
     #[test]
-    fn compiles_and_runs_a_single_number() {
-        assert_eq!(eval("42"), Value::Number(42.0));
-    }
-
-    /// Chapter 17's signature reference fragment.
-    #[test]
-    fn precedence_term_lower_than_factor() {
-        // `1 + 2 * 3` must parse as `1 + (2 * 3) = 7`, not `(1+2)*3 = 9`.
-        assert_eq!(eval("1 + 2 * 3"), Value::Number(7.0));
-    }
-
-    #[test]
-    fn grouping_overrides_precedence() {
-        assert_eq!(eval("(1 + 2) * 3"), Value::Number(9.0));
-    }
-
-    #[test]
-    fn unary_minus_binds_tighter_than_factor() {
-        // `-2 * 3` ⇒ `(-2) * 3 = -6`.
-        assert_eq!(eval("-2 * 3"), Value::Number(-6.0));
-    }
-
-    #[test]
-    fn left_associative_subtraction() {
-        // `1 - 2 - 3` ⇒ `(1 - 2) - 3 = -4` (not `1 - (2 - 3) = 2`).
-        assert_eq!(eval("1 - 2 - 3"), Value::Number(-4.0));
-    }
-
-    #[test]
-    fn left_associative_division() {
-        // `8 / 4 / 2` ⇒ `(8/4)/2 = 1`.
-        assert_eq!(eval("8 / 4 / 2"), Value::Number(1.0));
-    }
-
-    #[test]
-    fn nested_grouping() {
-        assert_eq!(eval("(5 - (3 - 1)) + -1"), Value::Number(2.0));
+    fn expression_precedence_and_associativity() {
+        assert_eq!(eval("42"), "42\n");
+        assert_eq!(eval("1 + 2 * 3"), "7\n");
+        assert_eq!(eval("(1 + 2) * 3"), "9\n");
+        assert_eq!(eval("-2 * 3"), "-6\n");
+        assert_eq!(eval("1 - 2 - 3"), "-4\n");
+        assert_eq!(eval("8 / 4 / 2"), "1\n");
+        assert_eq!(eval("(5 - (3 - 1)) + -1"), "2\n");
     }
 
     #[test]
     fn whitespace_and_comments_are_ignored() {
-        let src = "// preamble\n  1 + 2  // tail\n";
-        assert_eq!(eval(src), Value::Number(3.0));
+        let src = "// preamble\n  print 1 + 2;  // tail\n";
+        assert_eq!(run(src).0, "3\n");
     }
 
     #[test]
     fn missing_close_paren_reports_parse_error() {
-        let errs = compile("(1 + 2").expect_err("expected error");
+        let errs = compile_err("print (1 + 2;");
         assert!(
             errs.iter().any(|e| matches!(
                 e,
@@ -520,25 +656,29 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_reports_parse_error() {
-        let errs = compile("").expect_err("expected error");
+    fn empty_source_is_an_empty_program() {
+        assert_eq!(run("").0, "");
+    }
+
+    #[test]
+    fn expression_statement_requires_semicolon() {
+        let errs = compile_err("1 + 2");
         assert!(
             errs.iter().any(|e| matches!(
                 e,
-                LoxError::Parse { message, .. } if message == "Expect expression."
+                LoxError::Parse { message, .. } if message == "Expect ';' after expression."
             )),
             "errors were: {errs:?}"
         );
     }
 
     #[test]
-    fn extra_tokens_after_expression_report_parse_error() {
-        // `1 2` — once `1` is consumed we expect EOF, not another number.
-        let errs = compile("1 2").expect_err("expected error");
+    fn print_statement_requires_semicolon() {
+        let errs = compile_err("print 1");
         assert!(
             errs.iter().any(|e| matches!(
                 e,
-                LoxError::Parse { message, .. } if message == "Expect end of expression."
+                LoxError::Parse { message, .. } if message == "Expect ';' after value."
             )),
             "errors were: {errs:?}"
         );
@@ -546,9 +686,7 @@ mod tests {
 
     #[test]
     fn scan_error_surfaces_through_compiler() {
-        // `@` is not a valid Lox character; the scanner emits a Scan
-        // error which the compiler propagates verbatim.
-        let errs = compile("1 + @").expect_err("expected error");
+        let errs = compile_err("print 1 + @;");
         assert!(
             errs.iter().any(|e| matches!(e, LoxError::Scan { .. })),
             "errors were: {errs:?}"
@@ -556,283 +694,218 @@ mod tests {
     }
 
     #[test]
-    fn panic_mode_suppresses_cascade() {
-        // After the first parse error, follow-on errors caused by the
-        // confused parser state are suppressed until synchronisation.
-        let errs = compile("(((").expect_err("expected error");
+    fn invalid_assignment_target_is_compile_error() {
+        let errs = compile_err("a * b = 3;");
         assert!(
-            errs.len() <= 2,
-            "expected at most 2 errors with panic-mode suppression, got {}: {errs:?}",
-            errs.len()
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Invalid assignment target."
+            )),
+            "errors were: {errs:?}"
         );
     }
-}
 
-#[cfg(test)]
-mod chapter_18_tests {
-    //! Chapter 18 — Types of Values: literals, comparisons, type errors.
-
-    use super::*;
-    use crate::vm::{Vm, VmError};
-
-    fn eval(src: &str) -> Value {
-        let (chunk, mut heap) = compile(src).expect("compile clean");
-        Vm::new().interpret(&chunk, &mut heap).expect("runs clean")
-    }
-
-    fn eval_err(src: &str) -> VmError {
-        let (chunk, mut heap) = compile(src).expect("compile clean");
-        Vm::new()
-            .interpret(&chunk, &mut heap)
-            .expect_err("expected runtime error")
+    #[test]
+    fn panic_mode_synchronizes_at_statement_boundaries() {
+        let errs = compile_err("print (;\nprint 1;\nprint ;");
+        assert!(
+            errs.len() <= 2,
+            "expected synchronization to suppress cascades, got {}: {errs:?}",
+            errs.len()
+        );
     }
 
     #[test]
     fn nil_true_false_literals_evaluate() {
-        assert_eq!(eval("nil"), Value::Nil);
-        assert_eq!(eval("true"), Value::Bool(true));
-        assert_eq!(eval("false"), Value::Bool(false));
+        assert_eq!(eval("nil"), "nil\n");
+        assert_eq!(eval("true"), "true\n");
+        assert_eq!(eval("false"), "false\n");
     }
 
     #[test]
     fn logical_not_uses_lox_truthiness() {
-        // Only nil and false are falsy.
-        assert_eq!(eval("!nil"), Value::Bool(true));
-        assert_eq!(eval("!false"), Value::Bool(true));
-        assert_eq!(eval("!true"), Value::Bool(false));
-        assert_eq!(eval("!0"), Value::Bool(false)); // 0 is truthy
-        assert_eq!(eval("!!nil"), Value::Bool(false));
+        assert_eq!(eval("!nil"), "true\n");
+        assert_eq!(eval("!false"), "true\n");
+        assert_eq!(eval("!true"), "false\n");
+        assert_eq!(eval("!0"), "false\n");
+        assert_eq!(eval("!!nil"), "false\n");
     }
 
     #[test]
     fn equality_is_polymorphic() {
-        assert_eq!(eval("1 == 1"), Value::Bool(true));
-        assert_eq!(eval("1 == 2"), Value::Bool(false));
-        assert_eq!(eval("nil == nil"), Value::Bool(true));
-        assert_eq!(eval("true == true"), Value::Bool(true));
-        // Mixed types are unequal rather than raising — clox semantics.
-        assert_eq!(eval("1 == true"), Value::Bool(false));
-        assert_eq!(eval("nil == false"), Value::Bool(false));
-    }
-
-    #[test]
-    fn bang_equal_synthesizes_via_equal_plus_not() {
-        assert_eq!(eval("1 != 2"), Value::Bool(true));
-        assert_eq!(eval("1 != 1"), Value::Bool(false));
-        assert_eq!(eval("nil != true"), Value::Bool(true));
+        assert_eq!(eval("1 == 1"), "true\n");
+        assert_eq!(eval("1 == 2"), "false\n");
+        assert_eq!(eval("nil == nil"), "true\n");
+        assert_eq!(eval("true == true"), "true\n");
+        assert_eq!(eval("1 == true"), "false\n");
+        assert_eq!(eval("nil == false"), "false\n");
+        assert_eq!(eval("1 != 2"), "true\n");
+        assert_eq!(eval("1 != 1"), "false\n");
     }
 
     #[test]
     fn comparison_operators_on_numbers() {
-        assert_eq!(eval("1 < 2"), Value::Bool(true));
-        assert_eq!(eval("2 < 1"), Value::Bool(false));
-        assert_eq!(eval("1 > 2"), Value::Bool(false));
-        assert_eq!(eval("3 > 1"), Value::Bool(true));
-        // <= and >= synthesise via the *opposite* op + OP_NOT.
-        assert_eq!(eval("2 <= 2"), Value::Bool(true));
-        assert_eq!(eval("2 <= 1"), Value::Bool(false));
-        assert_eq!(eval("2 >= 2"), Value::Bool(true));
-        assert_eq!(eval("1 >= 2"), Value::Bool(false));
+        assert_eq!(eval("1 < 2"), "true\n");
+        assert_eq!(eval("2 < 1"), "false\n");
+        assert_eq!(eval("1 > 2"), "false\n");
+        assert_eq!(eval("3 > 1"), "true\n");
+        assert_eq!(eval("2 <= 2"), "true\n");
+        assert_eq!(eval("2 <= 1"), "false\n");
+        assert_eq!(eval("2 >= 2"), "true\n");
+        assert_eq!(eval("1 >= 2"), "false\n");
     }
 
     #[test]
     fn precedence_equality_below_comparison_below_term() {
-        // `1 + 2 < 4 == false` should parse as `((1 + 2) < 4) == false`,
-        // i.e. `(3 < 4) == false` ⇒ `true == false` ⇒ false.
-        assert_eq!(eval("1 + 2 < 4 == false"), Value::Bool(false));
+        assert_eq!(eval("1 + 2 < 4 == false"), "false\n");
     }
 
     #[test]
-    fn negate_non_number_is_runtime_error_with_line() {
-        let err = eval_err("-true");
-        let VmError::Runtime { line, message } = err;
+    fn numeric_type_errors_report_runtime_errors() {
+        let VmError::Runtime { line, message } = eval_err("-true");
         assert_eq!(message, "Operand must be a number.");
         assert_eq!(line, 1);
-    }
 
-    #[test]
-    fn arithmetic_on_non_numbers_is_runtime_error() {
-        // `-` (and `*`, `/`) keep the chapter-18 numeric-only contract
-        // even after chapter 19 overloads `+` for string concatenation.
         let VmError::Runtime { message, .. } = eval_err("1 - nil");
         assert_eq!(message, "Operands must be numbers.");
-    }
 
-    #[test]
-    fn comparison_on_non_numbers_is_runtime_error() {
         let VmError::Runtime { message, .. } = eval_err("nil < 1");
         assert_eq!(message, "Operands must be numbers.");
     }
 
     #[test]
-    fn equality_does_not_raise_for_mixed_types() {
-        // `==` is polymorphic: mixed types compare unequal rather than
-        // raising. Same for `!=`.
-        assert_eq!(eval("nil == 1"), Value::Bool(false));
-        assert_eq!(eval("true != 1"), Value::Bool(true));
-    }
-
-    #[test]
     fn runtime_error_line_attribution_is_correct() {
-        // The `-` is on line 3, so the error's line should be 3.
-        // (Using `-` rather than `+` keeps the assertion's expected
-        // message stable across chapter 19, which overloads `+` to
-        // also accept strings.)
-        let (chunk, mut heap) = compile("1\n - \nnil").expect("compile clean");
-        let VmError::Runtime { line, message } =
-            Vm::new().interpret(&chunk, &mut heap).expect_err("rt err");
+        let VmError::Runtime { line, message } = run_err("print 1\n - \nnil;");
         assert_eq!(message, "Operands must be numbers.");
         assert_eq!(line, 3);
     }
-}
 
-#[cfg(test)]
-mod chapter_19_tests {
-    //! Chapter 19 — Strings: literals, concatenation, content equality,
-    //! type errors when `+` mixes strings and numbers.
-
-    use super::*;
-    use crate::heap::Obj;
-    use crate::vm::{Vm, VmError};
-
-    /// Compile + run, returning both the result value and the heap so
-    /// the test can dereference any returned `Value::Obj`.
-    fn run(src: &str) -> (Value, crate::heap::Heap) {
-        let (chunk, mut heap) = compile(src).expect("compile clean");
-        let v = Vm::new().interpret(&chunk, &mut heap).expect("runs clean");
-        (v, heap)
-    }
-
-    fn run_err(src: &str) -> VmError {
-        let (chunk, mut heap) = compile(src).expect("compile clean");
-        Vm::new()
-            .interpret(&chunk, &mut heap)
-            .expect_err("expected runtime error")
+    #[test]
+    fn strings_evaluate_and_concatenate() {
+        assert_eq!(eval("\"hello\""), "hello\n");
+        assert_eq!(eval("\"\""), "\n");
+        assert_eq!(eval("\"foo\" + \"bar\""), "foobar\n");
+        assert_eq!(eval("\"a\" + \"b\" + \"c\""), "abc\n");
     }
 
     #[test]
-    fn string_literal_evaluates_to_obj_string() {
-        let (v, heap) = run("\"hello\"");
-        let Value::Obj(h) = v else {
-            panic!("expected Obj, got {v:?}");
-        };
-        assert_eq!(heap.as_str(h), Some("hello"));
+    fn string_equality_compares_contents() {
+        assert_eq!(eval("\"abc\" == \"abc\""), "true\n");
+        assert_eq!(eval("\"abc\" == \"xyz\""), "false\n");
+        assert_eq!(eval("\"abc\" != \"abc\""), "false\n");
+        assert_eq!(eval("\"abc\" != \"xyz\""), "true\n");
+        assert_eq!(eval("\"1\" == 1"), "false\n");
+        assert_eq!(eval("\"true\" == true"), "false\n");
+        assert_eq!(eval("\"\" == nil"), "false\n");
     }
 
     #[test]
-    fn empty_string_literal_works() {
-        let (v, heap) = run("\"\"");
-        let Value::Obj(h) = v else {
-            panic!("expected Obj");
-        };
-        assert_eq!(heap.as_str(h), Some(""));
-    }
-
-    #[test]
-    fn string_concatenation_via_plus() {
-        let (v, heap) = run("\"foo\" + \"bar\"");
-        let Value::Obj(h) = v else {
-            panic!("expected Obj");
-        };
-        assert_eq!(heap.as_str(h), Some("foobar"));
-    }
-
-    #[test]
-    fn three_way_concatenation_is_left_associative() {
-        // `("a" + "b") + "c"` — same shape as numeric `1 + 2 + 3`.
-        let (v, heap) = run("\"a\" + \"b\" + \"c\"");
-        let Value::Obj(h) = v else {
-            panic!("expected Obj");
-        };
-        assert_eq!(heap.as_str(h), Some("abc"));
-    }
-
-    #[test]
-    fn equal_operator_compares_string_contents() {
-        // Two distinct allocations of "abc" — pre-interning, they have
-        // distinct handles but `==` must still return true.
-        let (v, _heap) = run("\"abc\" == \"abc\"");
-        assert_eq!(v, Value::Bool(true));
-
-        let (v, _heap) = run("\"abc\" == \"xyz\"");
-        assert_eq!(v, Value::Bool(false));
-    }
-
-    #[test]
-    fn bang_equal_on_strings_negates_content_equality() {
-        let (v, _heap) = run("\"abc\" != \"abc\"");
-        assert_eq!(v, Value::Bool(false));
-        let (v, _heap) = run("\"abc\" != \"xyz\"");
-        assert_eq!(v, Value::Bool(true));
-    }
-
-    #[test]
-    fn equal_across_different_types_is_false_not_an_error() {
-        // String vs number / bool / nil — never raises, always false.
-        let (v, _) = run("\"1\" == 1");
-        assert_eq!(v, Value::Bool(false));
-        let (v, _) = run("\"true\" == true");
-        assert_eq!(v, Value::Bool(false));
-        let (v, _) = run("\"\" == nil");
-        assert_eq!(v, Value::Bool(false));
-    }
-
-    #[test]
-    fn plus_on_string_and_number_is_runtime_error() {
-        let VmError::Runtime { message, .. } = run_err("\"foo\" + 1");
+    fn string_type_errors_report_runtime_errors() {
+        let VmError::Runtime { message, .. } = eval_err("\"foo\" + 1");
         assert_eq!(message, "Operands must be two numbers or two strings.");
-    }
 
-    #[test]
-    fn plus_on_two_nils_is_runtime_error() {
-        let VmError::Runtime { message, .. } = run_err("nil + nil");
+        let VmError::Runtime { message, .. } = eval_err("nil + nil");
         assert_eq!(message, "Operands must be two numbers or two strings.");
-    }
 
-    #[test]
-    fn ordering_op_on_strings_remains_a_runtime_error() {
-        // `<` / `>` are numeric-only in Lox, even after chapter 19. clox
-        // produces "Operands must be numbers." — our VM matches.
-        let VmError::Runtime { message, .. } = run_err("\"a\" < \"b\"");
+        let VmError::Runtime { message, .. } = eval_err("\"a\" < \"b\"");
         assert_eq!(message, "Operands must be numbers.");
     }
 
     #[test]
     fn concatenation_allocates_a_new_object() {
-        // The result handle must differ from either operand handle —
-        // chapter 19 isn't interning yet, so concat always allocates.
-        let (chunk, mut heap) = compile("\"a\" + \"b\"").expect("compile");
+        let mut heap = Heap::new();
+        let chunk = compile("print \"a\" + \"b\";", &mut heap).expect("compile");
         let pre_objs = heap.len();
-        let v = Vm::new().interpret(&chunk, &mut heap).expect("runs");
-        // Compile time alloc'd 2 strings; concat alloc'd 1 more.
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out).expect("runs");
+        assert_eq!(String::from_utf8(out).unwrap(), "ab\n");
         assert_eq!(heap.len(), pre_objs + 1);
-        let Value::Obj(h) = v else {
-            panic!("expected Obj");
-        };
-        assert_eq!(heap.as_str(h), Some("ab"));
     }
 
     #[test]
     fn strings_are_truthy_via_bang() {
-        let (v, _) = run("!\"\"");
-        assert_eq!(v, Value::Bool(false)); // empty string is truthy → !"" is false
-        let (v, _) = run("!\"x\"");
-        assert_eq!(v, Value::Bool(false));
+        assert_eq!(eval("!\"\""), "false\n");
+        assert_eq!(eval("!\"x\""), "false\n");
     }
 
     #[test]
     fn compile_emits_string_constant_with_obj_payload() {
-        // Cross-check between the compiler and heap: a single string
-        // literal pushes one Obj into the heap and one constant into
-        // the chunk.
-        let (chunk, heap) = compile("\"hi\"").expect("compile");
+        let (chunk, heap) = compile_ok("print \"hi\";");
         assert_eq!(heap.len(), 1);
-        assert_eq!(chunk.constants.len(), 1);
-        let Value::Obj(h) = chunk.constants[0] else {
-            panic!("expected Obj constant");
-        };
-        match heap.get(h) {
-            Obj::Str(s) => assert_eq!(s, "hi"),
-        }
+        assert!(chunk.constants.iter().any(|v| {
+            let Value::Obj(h) = v else {
+                return false;
+            };
+            matches!(heap.get(*h), Obj::Str(s) if s == "hi")
+        }));
+    }
+
+    #[test]
+    fn print_and_expression_statements_have_expected_output() {
+        assert_eq!(run("print 1 + 2;\nprint 3 * 4;").0, "3\n12\n");
+        assert_eq!(run("1 + 2;").0, "");
+    }
+
+    #[test]
+    fn global_var_declarations_read_and_default_nil() {
+        let src = r#"
+            var beverage = "cafe au lait";
+            var breakfast = "beignets with " + beverage;
+            var unset;
+            print breakfast;
+            print unset;
+        "#;
+        assert_eq!(run(src).0, "beignets with cafe au lait\nnil\n");
+    }
+
+    #[test]
+    fn global_assignment_updates_existing_binding() {
+        let src = r#"
+            var breakfast = "beignets";
+            var beverage = "cafe au lait";
+            breakfast = "beignets with " + beverage;
+            print breakfast;
+            print breakfast = "toast";
+            print breakfast;
+        "#;
+        assert_eq!(run(src).0, "beignets with cafe au lait\ntoast\ntoast\n");
+    }
+
+    #[test]
+    fn global_redefinition_is_allowed() {
+        assert_eq!(run("var a = 1; var a = 2; print a;").0, "2\n");
+    }
+
+    #[test]
+    fn undefined_global_read_is_runtime_error() {
+        let VmError::Runtime { message, line } = run_err("print missing;");
+        assert_eq!(message, "Undefined variable 'missing'.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn undefined_global_assignment_is_runtime_error() {
+        let VmError::Runtime { message, line } = run_err("missing = 1;");
+        assert_eq!(message, "Undefined variable 'missing'.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn globals_persist_when_vm_and_heap_are_reused() {
+        let mut vm = Vm::new();
+        let mut heap = Heap::new();
+        let mut out = Vec::new();
+
+        let first = compile("var answer = 41;", &mut heap).expect("compile first");
+        vm.interpret(&first, &mut heap, &mut out)
+            .expect("first runs");
+
+        let second =
+            compile("answer = answer + 1; print answer;", &mut heap).expect("compile second");
+        vm.interpret(&second, &mut heap, &mut out)
+            .expect("second runs");
+
+        assert_eq!(String::from_utf8(out).unwrap(), "42\n");
     }
 }

@@ -17,28 +17,26 @@ fn run(src: &str) -> Result<String, Vec<LoxError>> {
 }
 
 #[test]
-fn run_to_writes_value_with_trailing_newline() {
-    // Chapter 17 emits `<value>\n` so a line-oriented REPL reader sees
-    // exactly one result per line.
-    assert_eq!(run("1 + 2 * 3").unwrap(), "7\n");
+fn run_to_writes_print_output() {
+    assert_eq!(run("print 1 + 2 * 3;").unwrap(), "7\n");
 }
 
 #[test]
 fn run_to_handles_grouping_and_unary() {
-    assert_eq!(run("-(1 + 2)").unwrap(), "-3\n");
+    assert_eq!(run("print -(1 + 2);").unwrap(), "-3\n");
 }
 
 #[test]
 fn run_to_renders_whole_numbers_without_decimal() {
-    // The chapter-17 numeric formatter follows clox's `printValue`:
+    // The numeric formatter follows clox's `printValue`:
     // whole numbers as `42`, fractions natural.
-    assert_eq!(run("42").unwrap(), "42\n");
-    assert_eq!(run("1.5 + 0.25").unwrap(), "1.75\n");
+    assert_eq!(run("print 42;").unwrap(), "42\n");
+    assert_eq!(run("print 1.5 + 0.25;").unwrap(), "1.75\n");
 }
 
 #[test]
 fn run_to_propagates_parse_errors() {
-    let errs = run("(1 + 2").expect_err("expected parse error");
+    let errs = run("print (1 + 2;").expect_err("expected parse error");
     assert!(
         errs.iter().any(|e| matches!(
             e,
@@ -50,7 +48,7 @@ fn run_to_propagates_parse_errors() {
 
 #[test]
 fn run_to_propagates_scan_errors() {
-    let errs = run("1 + @").expect_err("expected scan error");
+    let errs = run("print 1 + @;").expect_err("expected scan error");
     assert!(
         errs.iter().any(|e| matches!(e, LoxError::Scan { .. })),
         "errors were: {errs:?}"
@@ -58,24 +56,17 @@ fn run_to_propagates_scan_errors() {
 }
 
 #[test]
-fn run_to_propagates_compile_error_for_empty_input() {
-    let errs = run("").expect_err("expected parse error");
-    assert!(
-        errs.iter().any(|e| matches!(
-            e,
-            LoxError::Parse { message, .. } if message == "Expect expression."
-        )),
-        "errors were: {errs:?}"
-    );
+fn run_to_accepts_empty_program() {
+    assert_eq!(run("").unwrap(), "");
 }
 
 #[test]
-fn run_to_propagates_compile_error_for_trailing_garbage() {
+fn run_to_propagates_compile_error_for_missing_semicolon() {
     let errs = run("1 2").expect_err("expected parse error");
     assert!(
         errs.iter().any(|e| matches!(
             e,
-            LoxError::Parse { message, .. } if message == "Expect end of expression."
+            LoxError::Parse { message, .. } if message == "Expect ';' after expression."
         )),
         "errors were: {errs:?}"
     );
@@ -87,22 +78,22 @@ fn run_to_propagates_compile_error_for_trailing_garbage() {
 fn run_to_renders_string_literal_verbatim() {
     // Chapter 19 strings render via the heap-aware Display so the
     // user sees the actual content, not a `<obj#N>` placeholder.
-    assert_eq!(run("\"hello\"").unwrap(), "hello\n");
+    assert_eq!(run("print \"hello\";").unwrap(), "hello\n");
 }
 
 #[test]
 fn run_to_concatenates_strings() {
-    assert_eq!(run("\"foo\" + \"bar\"").unwrap(), "foobar\n");
+    assert_eq!(run("print \"foo\" + \"bar\";").unwrap(), "foobar\n");
 }
 
 #[test]
 fn run_to_string_equality_renders_bool() {
-    assert_eq!(run("\"abc\" == \"abc\"").unwrap(), "true\n");
+    assert_eq!(run("print \"abc\" == \"abc\";").unwrap(), "true\n");
 }
 
 #[test]
 fn run_to_string_plus_number_is_runtime_error() {
-    let errs = run("\"a\" + 1").expect_err("expected runtime error");
+    let errs = run("print \"a\" + 1;").expect_err("expected runtime error");
     assert!(
         errs.iter().any(|e| matches!(
             e,
@@ -111,4 +102,15 @@ fn run_to_string_plus_number_is_runtime_error() {
         )),
         "errors were: {errs:?}"
     );
+}
+
+#[test]
+fn run_to_handles_global_variables_and_assignment() {
+    let src = r#"
+        var a = "global";
+        print a;
+        a = a + " updated";
+        print a;
+    "#;
+    assert_eq!(run(src).unwrap(), "global\nglobal updated\n");
 }

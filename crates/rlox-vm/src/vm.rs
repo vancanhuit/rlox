@@ -16,11 +16,8 @@
 //!   instead of a raw `*const u8`. The borrow checker objects to the
 //!   pointer-walking style and the index version compiles to the same
 //!   code under release optimisations.
-//! - `OP_RETURN` *returns* the popped value through `Result<Value, _>`
-//!   rather than printing to stdout. Tests that need to observe the
-//!   computed value can do so directly; chapters 21+ will add an
-//!   explicit `OP_PRINT` opcode for user-visible output that writes to
-//!   a configurable [`std::io::Write`] sink.
+//! - `OP_PRINT` writes to a configurable [`std::io::Write`] sink instead
+//!   of directly to stdout, so tests and embedders can capture output.
 //! - clox's `DEBUG_TRACE_EXECUTION` macro is replaced by a runtime
 //!   trace sink: see [`Vm::interpret_with_trace`].
 //!
@@ -28,7 +25,9 @@
 //! [`assert!`]s instead of returning a `Result`, mirroring clox's
 //! "we don't recover from a malformed chunk" stance.
 
-use std::fmt::{self, Write};
+use std::collections::HashMap;
+use std::fmt::{self, Write as FmtWrite};
+use std::io::Write as IoWrite;
 
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction;
@@ -68,13 +67,18 @@ pub type VmResult<T = Value> = Result<T, VmError>;
 /// The bytecode interpreter.
 ///
 /// One [`Vm`] can execute many [`Chunk`]s back-to-back; the stack is
-/// drained between programs by [`OpCode::Return`]. Holding the VM
-/// across calls is the seed for chapter 21's persistent globals table
-/// and chapter 24's call-frame stack.
+/// drained between programs by [`OpCode::Return`]. Chapter 21 adds a
+/// persistent globals table to the VM; callers that reuse a VM must
+/// also reuse the same [`Heap`] because global values may contain object
+/// handles into that heap.
 #[derive(Debug, Default)]
 pub struct Vm {
     /// Operand stack. Drained on `OP_RETURN`.
     stack: Vec<Value>,
+    /// Global variables, keyed by identifier text. This intentionally
+    /// uses Rust's standard hash table instead of clox's custom chapter
+    /// 20 table.
+    globals: HashMap<String, Value>,
 }
 
 impl Vm {
@@ -84,14 +88,12 @@ impl Vm {
         Self::default()
     }
 
-    /// Run `chunk` to completion, returning the value at the top of
-    /// the stack when the chunk's `OP_RETURN` fires.
+    /// Run `chunk` to completion, writing any `print` output to `out`.
     ///
     /// # Errors
     ///
-    /// Returns [`VmError::Runtime`] for any runtime fault. Chapter 15
-    /// has none, so this is currently unreachable from a well-formed
-    /// chunk; chapters 18+ will populate it.
+    /// Returns [`VmError::Runtime`] for runtime faults such as type
+    /// errors, undefined globals, or output errors.
     ///
     /// # Panics
     ///
@@ -99,8 +101,13 @@ impl Vm {
     /// unknown opcode, missing terminating `OP_RETURN`). These are
     /// compiler bugs, not runtime errors, and matching clox we abort
     /// rather than try to recover.
-    pub fn interpret(&mut self, chunk: &Chunk, heap: &mut Heap) -> VmResult<Value> {
-        self.run(chunk, heap, None::<&mut String>)
+    pub fn interpret(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        out: &mut dyn IoWrite,
+    ) -> VmResult<()> {
+        self.run(chunk, heap, out, None::<&mut String>)
     }
 
     /// Like [`Self::interpret`], but write a clox-style execution trace
@@ -111,21 +118,23 @@ impl Vm {
     /// # Errors
     ///
     /// Same as [`Self::interpret`].
-    pub fn interpret_with_trace<W: Write>(
+    pub fn interpret_with_trace<W: FmtWrite>(
         &mut self,
         chunk: &Chunk,
         heap: &mut Heap,
+        out: &mut dyn IoWrite,
         trace: &mut W,
-    ) -> VmResult<Value> {
-        self.run(chunk, heap, Some(trace))
+    ) -> VmResult<()> {
+        self.run(chunk, heap, out, Some(trace))
     }
 
-    fn run<W: Write>(
+    fn run<W: FmtWrite>(
         &mut self,
         chunk: &Chunk,
         heap: &mut Heap,
+        out: &mut dyn IoWrite,
         mut trace: Option<&mut W>,
-    ) -> VmResult<Value> {
+    ) -> VmResult<()> {
         // Reset the stack between programs so a `Vm` can be reused. We
         // reuse the allocation rather than reallocating.
         self.stack.clear();
@@ -151,6 +160,44 @@ impl Vm {
                     ip += 1;
                     let value = chunk.constants[idx];
                     self.push(value);
+                }
+                OpCode::Pop => {
+                    self.pop();
+                }
+                OpCode::Print => {
+                    let value = self.pop();
+                    writeln!(out, "{}", value.display(heap))
+                        .map_err(|e| Self::runtime_error(chunk, op_ip, &e.to_string()))?;
+                }
+                OpCode::DefineGlobal => {
+                    let name = Self::read_string_constant(chunk, heap, ip);
+                    ip += 1;
+                    self.globals.insert(name, self.peek(0));
+                    self.pop();
+                }
+                OpCode::GetGlobal => {
+                    let name = Self::read_string_constant(chunk, heap, ip);
+                    ip += 1;
+                    let Some(value) = self.globals.get(&name).copied() else {
+                        return Err(Self::runtime_error(
+                            chunk,
+                            op_ip,
+                            &format!("Undefined variable '{name}'."),
+                        ));
+                    };
+                    self.push(value);
+                }
+                OpCode::SetGlobal => {
+                    let name = Self::read_string_constant(chunk, heap, ip);
+                    ip += 1;
+                    if !self.globals.contains_key(&name) {
+                        return Err(Self::runtime_error(
+                            chunk,
+                            op_ip,
+                            &format!("Undefined variable '{name}'."),
+                        ));
+                    }
+                    self.globals.insert(name, self.peek(0));
                 }
                 OpCode::Nil => self.push(Value::Nil),
                 OpCode::True => self.push(Value::Bool(true)),
@@ -184,7 +231,7 @@ impl Vm {
                 OpCode::Subtract => self.binary_arith(chunk, op_ip, |a, b| a - b)?,
                 OpCode::Multiply => self.binary_arith(chunk, op_ip, |a, b| a * b)?,
                 OpCode::Divide => self.binary_arith(chunk, op_ip, |a, b| a / b)?,
-                OpCode::Return => return Ok(self.pop()),
+                OpCode::Return => return Ok(()),
             }
         }
     }
@@ -197,6 +244,20 @@ impl Vm {
         self.stack
             .pop()
             .expect("stack underflow: malformed bytecode (compiler bug)")
+    }
+
+    fn peek(&self, distance: usize) -> Value {
+        self.stack[self.stack.len() - 1 - distance]
+    }
+
+    fn read_string_constant(chunk: &Chunk, heap: &Heap, operand_ip: usize) -> String {
+        let idx = chunk.code[operand_ip] as usize;
+        let Value::Obj(handle) = chunk.constants[idx] else {
+            panic!("global name operand {idx} does not reference a string object");
+        };
+        heap.as_str(handle)
+            .expect("global name operand references non-string object")
+            .to_owned()
     }
 
     /// Chapter 19 `OP_ADD`: dispatches on the operand types so the
@@ -297,16 +358,16 @@ impl Vm {
 ///           [ 1.2 ][ 3.4 ]
 /// 0000  123 OP_ADD
 /// ```
-fn trace_step(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn Write) {
+fn trace_step(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn FmtWrite) {
     // The trace's stack rendering uses the bare Display (not the
     // heap-aware adapter), so any object handle prints as `<obj#N>`.
     // The book's chapter-15 trace tests still pass because they only
-    // exercise numeric values; chapter 19 adds new heap-aware tests
-    // through different surfaces.
+    // exercise numeric values; heap-aware output is tested through the
+    // public execution surfaces.
     let _ = trace_inner(chunk, ip, stack, out);
 }
 
-fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn Write) -> fmt::Result {
+fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn FmtWrite) -> fmt::Result {
     // 10 spaces to align with the `0000` offset column under the
     // following disassembled instruction.
     write!(out, "          ")?;
@@ -322,22 +383,29 @@ fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn Write) -
 mod tests {
     use super::*;
 
-    /// Helper: build a chunk that pushes `n` and immediately returns it.
-    fn return_constant(n: f64) -> Chunk {
+    /// Helper: build a chunk that prints `n` and immediately returns.
+    fn print_constant(n: f64) -> Chunk {
         let mut c = Chunk::new();
         let idx = c.add_constant(Value::Number(n));
         c.write_op(OpCode::Constant, 1);
         c.write_byte(idx, 1);
+        c.write_op(OpCode::Print, 1);
         c.write_op(OpCode::Return, 1);
         c
     }
 
-    #[test]
-    fn return_pops_top_of_stack() {
-        let c = return_constant(42.0);
+    fn run_chunk(c: &Chunk, heap: &mut Heap) -> String {
         let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(c, heap, &mut out).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn print_pops_top_of_stack() {
+        let c = print_constant(42.0);
         let mut heap = Heap::new();
-        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(42.0));
+        assert_eq!(run_chunk(&c, &mut heap), "42\n");
     }
 
     #[test]
@@ -347,11 +415,11 @@ mod tests {
         c.write_op(OpCode::Constant, 1);
         c.write_byte(idx, 1);
         c.write_op(OpCode::Negate, 1);
+        c.write_op(OpCode::Print, 1);
         c.write_op(OpCode::Return, 1);
 
-        let mut vm = Vm::new();
         let mut heap = Heap::new();
-        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(-1.2));
+        assert_eq!(run_chunk(&c, &mut heap), "-1.2\n");
     }
 
     /// Reproduces the chapter 15 reference fragment `1 + 2 = 3`.
@@ -365,11 +433,11 @@ mod tests {
         c.write_op(OpCode::Constant, 1);
         c.write_byte(two, 1);
         c.write_op(OpCode::Add, 1);
+        c.write_op(OpCode::Print, 1);
         c.write_op(OpCode::Return, 1);
 
-        let mut vm = Vm::new();
         let mut heap = Heap::new();
-        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(3.0));
+        assert_eq!(run_chunk(&c, &mut heap), "3\n");
     }
 
     /// `(1 + 2) * 3 - -4` exercises every arithmetic op + negation in
@@ -397,11 +465,11 @@ mod tests {
         c.write_byte(four, 1);
         c.write_op(OpCode::Negate, 1); // stack: [9, -4]
         c.write_op(OpCode::Subtract, 1); // stack: [13]
+        c.write_op(OpCode::Print, 1);
         c.write_op(OpCode::Return, 1);
 
-        let mut vm = Vm::new();
         let mut heap = Heap::new();
-        assert_eq!(vm.interpret(&c, &mut heap).unwrap(), Value::Number(13.0));
+        assert_eq!(run_chunk(&c, &mut heap), "13\n");
     }
 
     #[test]
@@ -417,14 +485,11 @@ mod tests {
         c.write_op(OpCode::Constant, 1);
         c.write_byte(zero, 1);
         c.write_op(OpCode::Divide, 1);
+        c.write_op(OpCode::Print, 1);
         c.write_op(OpCode::Return, 1);
 
-        let mut vm = Vm::new();
         let mut heap = Heap::new();
-        let Value::Number(n) = vm.interpret(&c, &mut heap).unwrap() else {
-            panic!("expected Number");
-        };
-        assert!(n.is_infinite() && n.is_sign_positive(), "got {n}");
+        assert_eq!(run_chunk(&c, &mut heap), "inf\n");
     }
 
     /// Chapter 15's signature trace output. Expected text is the
@@ -432,12 +497,15 @@ mod tests {
     /// for every instruction including the final `OP_RETURN`.
     #[test]
     fn debug_trace_emits_clox_format() {
-        let c = return_constant(1.2);
+        let c = print_constant(1.2);
 
         let mut trace = String::new();
         let mut vm = Vm::new();
         let mut heap = Heap::new();
-        vm.interpret_with_trace(&c, &mut heap, &mut trace).unwrap();
+        let mut out = Vec::new();
+        vm.interpret_with_trace(&c, &mut heap, &mut out, &mut trace)
+            .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "1.2\n");
 
         // Built with explicit `\n`s rather than a multi-line string
         // literal so the trailing whitespace on the empty-stack line
@@ -446,7 +514,9 @@ mod tests {
             "          \n",
             "0000    1 OP_CONSTANT         0 '1.2'\n",
             "          [ 1.2 ]\n",
-            "0002    | OP_RETURN\n",
+            "0002    | OP_PRINT\n",
+            "          \n",
+            "0003    | OP_RETURN\n",
         );
         assert_eq!(trace, expected);
     }
@@ -455,29 +525,36 @@ mod tests {
     fn vm_can_be_reused_across_chunks() {
         let mut vm = Vm::new();
         let mut heap = Heap::new();
-        assert_eq!(
-            vm.interpret(&return_constant(1.0), &mut heap).unwrap(),
-            Value::Number(1.0)
-        );
-        assert_eq!(
-            vm.interpret(&return_constant(2.0), &mut heap).unwrap(),
-            Value::Number(2.0)
-        );
+        let mut out = Vec::new();
+        vm.interpret(&print_constant(1.0), &mut heap, &mut out)
+            .unwrap();
+        vm.interpret(&print_constant(2.0), &mut heap, &mut out)
+            .unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "1\n2\n");
         // Stack must have been drained between programs.
         assert!(vm.stack.is_empty());
     }
 
     #[test]
-    #[should_panic(expected = "stack underflow")]
-    fn empty_chunk_with_only_return_panics_on_underflow() {
-        // OP_RETURN with no value pushed first — clearly malformed
-        // bytecode. The VM's invariant is "a well-formed chunk always
-        // leaves something on top of the stack before OP_RETURN", so we
-        // panic rather than return a runtime error.
+    fn empty_chunk_with_only_return_exits_cleanly() {
         let mut c = Chunk::new();
         c.write_op(OpCode::Return, 1);
         let mut vm = Vm::new();
         let mut heap = Heap::new();
-        let _ = vm.interpret(&c, &mut heap);
+        let mut out = Vec::new();
+        vm.interpret(&c, &mut heap, &mut out).unwrap();
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "stack underflow")]
+    fn pop_on_empty_stack_panics_on_underflow() {
+        let mut c = Chunk::new();
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::Return, 1);
+        let mut vm = Vm::new();
+        let mut heap = Heap::new();
+        let mut out = Vec::new();
+        let _ = vm.interpret(&c, &mut heap, &mut out);
     }
 }

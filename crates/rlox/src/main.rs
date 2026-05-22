@@ -98,12 +98,9 @@ fn run_file(path: &Path) -> ExitCode {
     }
 }
 
-/// REPL — the tree-walk variant carries a long-lived `Interpreter`
-/// across prompts so chapter-8-and-up state (variables, functions,
-/// classes) survives between lines. The VM through chapter 19 is
-/// stateless (no globals yet), so the `vm` build's REPL just runs
-/// `run_to` once per line; chapter 21 will introduce a persistent
-/// VM state and a richer REPL surface.
+/// REPL — both backends carry long-lived runtime state across prompts:
+/// the tree-walk interpreter keeps its environment, and the VM keeps
+/// its globals table plus heap.
 #[cfg(feature = "tree")]
 fn run_prompt() -> ExitCode {
     use rlox_tree::Interpreter;
@@ -174,14 +171,18 @@ fn repl_step_tree(
 }
 
 /// REPL for the bytecode-VM build. Each line is compiled into its own
-/// expression chunk and executed; there's no carry-over state until
-/// chapter 21 introduces globals.
+/// chunk and executed against the same VM + heap so global bindings
+/// survive between prompts.
 #[cfg(feature = "vm")]
 fn run_prompt() -> ExitCode {
+    use rlox_vm::{Heap, Vm, run_to_with};
+
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut line = String::new();
     let stderr = io::stderr();
+    let mut vm = Vm::new();
+    let mut heap = Heap::new();
     loop {
         {
             let mut prompt = stderr.lock();
@@ -208,7 +209,7 @@ fn run_prompt() -> ExitCode {
             continue;
         }
 
-        match run_to(trimmed, &mut stdout) {
+        match run_to_with(trimmed, &mut vm, &mut heap, &mut stdout) {
             Ok(()) => {}
             Err(errors) => {
                 let _ = stdout.flush();

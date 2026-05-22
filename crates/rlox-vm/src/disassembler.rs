@@ -68,7 +68,9 @@ pub fn disassemble_instruction(
     let byte = chunk.code[offset];
     match OpCode::from_byte(byte) {
         // Constant + operand pair: 2 bytes, emits the constant value.
-        Some(op @ OpCode::Constant) => constant_instruction(op, chunk, offset, out),
+        Some(
+            op @ (OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal),
+        ) => constant_instruction(op, chunk, offset, out),
         // Single-byte ops (arithmetic, comparisons, literals, return).
         Some(
             op @ (OpCode::Negate
@@ -83,7 +85,9 @@ pub fn disassemble_instruction(
             | OpCode::Not
             | OpCode::Equal
             | OpCode::Greater
-            | OpCode::Less),
+            | OpCode::Less
+            | OpCode::Pop
+            | OpCode::Print),
         ) => simple_instruction(op, offset, out),
         None => {
             writeln!(out, "?? {byte:#04x}")?;

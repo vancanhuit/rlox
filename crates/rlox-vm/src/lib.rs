@@ -13,14 +13,14 @@
 //!   type errors.
 //! - chapter 19: heap-backed strings, content equality, and `+`
 //!   concatenation.
+//! - chapter 21: statements, `print`, global variables, and assignment.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
 //! [`disassembler`] helpers, the [`Vm`] interpreter, and a top-level
 //! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
-//! build wires [`run_to`] into its CLI. The current VM evaluates a single
-//! Lox *expression* and prints the result; statements + `print` arrive
-//! in chapter 21.
+//! build wires [`run_to`] into its CLI. The current VM executes a Lox
+//! program made of top-level statements and global declarations.
 
 pub mod chunk;
 pub mod compiler;
@@ -38,13 +38,11 @@ pub use vm::{Vm, VmError, VmResult};
 
 use std::io::Write;
 
-/// Compile and execute a Lox *expression*, writing the result followed
-/// by a newline to `out`.
+/// Compile and execute a Lox program, writing any `print` output to `out`.
 ///
-/// The bytecode VM currently only handles expression-level Lox; the
-/// surface that `rlox-tree` exposes for full programs (statements,
-/// declarations, etc.) does not exist yet. The umbrella `rlox` binary
-/// invokes this when built with `--features vm`.
+/// This one-shot helper creates a fresh [`Vm`] and [`Heap`], so globals
+/// do not persist across calls. Use [`run_to_with`] when building a REPL
+/// or embedding a long-lived VM.
 ///
 /// # Errors
 ///
@@ -52,23 +50,36 @@ use std::io::Write;
 /// `Vec`, mirroring the tree-walk crate's reporting strategy so the CLI
 /// can pick a consistent exit code.
 pub fn run_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
-    let (chunk, mut heap) = compile(source)?;
     let mut vm = Vm::new();
-    let value = vm
-        .interpret(&chunk, &mut heap)
+    let mut heap = Heap::new();
+    run_to_with(source, &mut vm, &mut heap, out)
+}
+
+/// Compile and execute `source` using an existing [`Vm`] and [`Heap`].
+///
+/// Keeping both values alive across calls preserves global bindings and
+/// any object handles stored in those bindings.
+pub fn run_to_with(
+    source: &str,
+    vm: &mut Vm,
+    heap: &mut Heap,
+    out: &mut dyn Write,
+) -> std::result::Result<(), Vec<LoxError>> {
+    let chunk = compile(source, heap)?;
+    vm.interpret(&chunk, heap, out)
         .map_err(|e| vec![vm_to_lox(e)])?;
-    // The VM renders the expression's value the same way clox's
-    // `printValue` does (whole numbers as `42`, fractions natural,
-    // booleans as `true`/`false`, the singleton as `nil`, strings
-    // verbatim), terminated with a newline so line-oriented REPL
-    // clients see one result per line.
-    writeln!(out, "{}", value.display(&heap)).map_err(|e| {
-        vec![LoxError::Runtime {
-            line: 0,
-            message: e.to_string(),
-        }]
-    })?;
     Ok(())
+}
+
+/// Compile and execute a single expression, writing its value followed
+/// by a newline to `out`.
+///
+/// This compatibility helper is useful for embedding and focused tests;
+/// the main VM entry point follows chapter 21 and expects full Lox
+/// statements such as `print expr;`.
+pub fn eval_expr_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
+    let wrapped = format!("print {source};");
+    run_to(&wrapped, out)
 }
 
 /// Translate a [`VmError`] into the workspace-wide [`LoxError`] surface
