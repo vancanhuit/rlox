@@ -32,7 +32,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction_with_heap;
-use crate::heap::{Closure, Handle, Heap, NativeFunction, Obj, Upvalue, UpvalueLocation};
+use crate::heap::{
+    Closure, GcRoots, GcStats, Handle, Heap, NativeFunction, Obj, Upvalue, UpvalueLocation,
+};
 use crate::value::{Value, values_equal};
 
 /// A runtime error surfaced by the VM.
@@ -113,6 +115,45 @@ impl Vm {
         Self::default()
     }
 
+    /// Run a mark-sweep collection using the VM's current roots.
+    ///
+    /// This marks values on the operand stack, global values, active
+    /// call-frame closures, and open upvalue objects. It does not root
+    /// arbitrary compiled chunks held by the caller; use
+    /// [`Self::collect_garbage_with_chunks`] if you plan to execute an
+    /// already-compiled chunk again after collecting.
+    #[must_use]
+    pub fn collect_garbage(&self, heap: &mut Heap) -> GcStats {
+        self.collect_garbage_with_chunks(heap, &[])
+    }
+
+    /// Run a mark-sweep collection with additional compiled chunks as
+    /// roots.
+    ///
+    /// The VM uses this internally during interpretation to keep the
+    /// borrowed top-level script chunk alive at allocation safe points.
+    /// Embedders can call it before reusing a compiled [`Chunk`] whose
+    /// constants may contain object handles.
+    #[must_use]
+    pub fn collect_garbage_with_chunks(&self, heap: &mut Heap, chunks: &[&Chunk]) -> GcStats {
+        let mut values = Vec::with_capacity(self.stack.len() + self.globals.len());
+        values.extend(self.stack.iter().copied());
+        values.extend(self.globals.values().copied());
+
+        let mut handles = Vec::with_capacity(self.frames.len() + self.open_upvalues.len());
+        handles.extend(self.frames.iter().filter_map(|frame| match frame.function {
+            FrameFunction::Script => None,
+            FrameFunction::Closure(handle) => Some(handle),
+        }));
+        handles.extend(self.open_upvalues.iter().copied());
+
+        heap.collect_garbage(GcRoots {
+            values: &values,
+            handles: &handles,
+            chunks,
+        })
+    }
+
     /// Run `chunk` to completion, writing any `print` output to `out`.
     ///
     /// # Errors
@@ -160,13 +201,13 @@ impl Vm {
         out: &mut dyn IoWrite,
         mut trace: Option<&mut W>,
     ) -> VmResult<()> {
-        self.ensure_natives(heap);
-
         // Reset the stack between programs so a `Vm` can be reused. We
         // reuse the allocation rather than reallocating.
         self.stack.clear();
         self.frames.clear();
         self.open_upvalues.clear();
+        self.ensure_natives(heap);
+        self.maybe_collect(heap, chunk);
         self.frames.push(CallFrame {
             function: FrameFunction::Script,
             ip: 0,
@@ -214,7 +255,10 @@ impl Vm {
                 let value = self.read_constant(chunk, heap, frame_index);
                 self.push(value);
             }
-            OpCode::Closure => self.closure(chunk, heap, frame_index),
+            OpCode::Closure => {
+                self.closure(chunk, heap, frame_index);
+                self.maybe_collect(heap, chunk);
+            }
             OpCode::Pop => {
                 self.pop();
             }
@@ -276,7 +320,10 @@ impl Vm {
             OpCode::Greater => self.binary_cmp(line, |a, b| a > b)?,
             OpCode::Less => self.binary_cmp(line, |a, b| a < b)?,
             OpCode::Negate => self.negate(line)?,
-            OpCode::Add => self.op_add(line, heap)?,
+            OpCode::Add => {
+                self.op_add(line, heap)?;
+                self.maybe_collect(heap, chunk);
+            }
             OpCode::Subtract => self.binary_arith(line, |a, b| a - b)?,
             OpCode::Multiply => self.binary_arith(line, |a, b| a * b)?,
             OpCode::Divide => self.binary_arith(line, |a, b| a / b)?,
@@ -551,6 +598,12 @@ impl Vm {
         let high = u16::from(self.read_byte(script_chunk, heap, frame_index));
         let low = u16::from(self.read_byte(script_chunk, heap, frame_index));
         (high << 8) | low
+    }
+
+    fn maybe_collect(&self, heap: &mut Heap, script_chunk: &Chunk) {
+        if heap.needs_collection() {
+            let _ = self.collect_garbage_with_chunks(heap, &[script_chunk]);
+        }
     }
 
     fn ensure_natives(&mut self, heap: &mut Heap) {
@@ -890,6 +943,42 @@ mod tests {
         assert_eq!(String::from_utf8(out).unwrap(), "1\n2\n");
         // Stack must have been drained between programs.
         assert!(vm.stack.is_empty());
+    }
+
+    #[test]
+    fn automatic_gc_roots_script_chunk_constants() {
+        let mut heap = Heap::new();
+        let chunk = crate::compiler::compile("print \"still here\";", &mut heap).unwrap();
+        heap.force_next_collection();
+
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out).unwrap();
+
+        assert_eq!(String::from_utf8(out).unwrap(), "still here\n");
+    }
+
+    #[test]
+    fn explicit_gc_preserves_globals() {
+        let mut heap = Heap::new();
+        let chunk = crate::compiler::compile(
+            r#"
+            var global = "live";
+            "dead";
+            "#,
+            &mut heap,
+        )
+        .unwrap();
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out).unwrap();
+
+        let stats = vm.collect_garbage(&mut heap);
+
+        assert!(stats.collected > 0);
+        let print_global = crate::compiler::compile("print global;", &mut heap).unwrap();
+        vm.interpret(&print_global, &mut heap, &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "live\n");
     }
 
     #[test]
