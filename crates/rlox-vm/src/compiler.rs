@@ -1,4 +1,4 @@
-//! Chapter 22 — Local Variables.
+//! Chapter 23 — Jumping Back and Forth.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -10,7 +10,8 @@
 //! into a top-level program made of declarations and statements,
 //! including `print`, expression statements, global `var` declarations,
 //! global reads, and global assignment. Chapter 22 adds lexical block
-//! scopes and stack-slot locals.
+//! scopes and stack-slot locals. Chapter 23 compiles structured
+//! control flow to raw forward and backward jumps.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -58,15 +59,15 @@ pub fn compile(source: &str, heap: &mut Heap) -> Result<Chunk, Vec<LoxError>> {
 /// matters: `parse_precedence(p)` continues while the *next* token's
 /// infix precedence is `>= p`.
 ///
-/// Slots reserved for later chapters (`Or`/`And`/`Call`/`Primary`) are
-/// kept commented out so the ordering remains stable as we light them up.
+/// Slots reserved for later chapters (`Call`/`Primary`) are kept
+/// commented out so the ordering remains stable as we light them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
     None = 0,
     Assignment = 1, // =
-    // Or,         // or
-    // And,        // and
+    Or = 2,         // or
+    And = 3,        // and
     Equality = 4,   // == !=
     Comparison = 5, // < > <= >=
     Term = 6,       // + -
@@ -81,7 +82,9 @@ impl Precedence {
     const fn next_higher(self) -> Self {
         match self {
             Self::None => Self::Assignment,
-            Self::Assignment => Self::Equality,
+            Self::Assignment => Self::Or,
+            Self::Or => Self::And,
+            Self::And => Self::Equality,
             Self::Equality => Self::Comparison,
             Self::Comparison => Self::Term,
             Self::Term => Self::Factor,
@@ -110,6 +113,10 @@ enum ParseFn {
     String,
     /// Parses a local/global variable read or assignment.
     Variable,
+    /// Parses short-circuiting logical `and`.
+    And,
+    /// Parses short-circuiting logical `or`.
+    Or,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -154,6 +161,17 @@ const fn rule_for(t: TokenType) -> ParseRule {
             prefix: ParseFn::Number,
             infix: ParseFn::None,
             precedence: Precedence::None,
+        },
+        // Chapter 23 — short-circuiting logical operators.
+        TokenType::And => ParseRule {
+            prefix: ParseFn::None,
+            infix: ParseFn::And,
+            precedence: Precedence::And,
+        },
+        TokenType::Or => ParseRule {
+            prefix: ParseFn::None,
+            infix: ParseFn::Or,
+            precedence: Precedence::Or,
         },
         TokenType::Identifier => ParseRule {
             prefix: ParseFn::Variable,
@@ -327,6 +345,42 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         self.emit_byte(byte);
     }
 
+    fn emit_jump(&mut self, op: OpCode) -> usize {
+        self.emit_op(op);
+        self.emit_byte(0xff);
+        self.emit_byte(0xff);
+        self.chunk.len() - 2
+    }
+
+    fn patch_jump(&mut self, offset: usize) {
+        let jump = self.chunk.len() - offset - 2;
+        if jump > u16::MAX as usize {
+            self.error_at_previous("Too much code to jump over.");
+            return;
+        }
+
+        let bytes = u16::try_from(jump)
+            .expect("jump was checked against u16::MAX")
+            .to_be_bytes();
+        self.chunk.code[offset] = bytes[0];
+        self.chunk.code[offset + 1] = bytes[1];
+    }
+
+    fn emit_loop(&mut self, loop_start: usize) {
+        self.emit_op(OpCode::Loop);
+        let offset = self.chunk.len() - loop_start + 2;
+        if offset > u16::MAX as usize {
+            self.error_at_previous("Loop body too large.");
+            return;
+        }
+
+        let bytes = u16::try_from(offset)
+            .expect("loop offset was checked against u16::MAX")
+            .to_be_bytes();
+        self.emit_byte(bytes[0]);
+        self.emit_byte(bytes[1]);
+    }
+
     fn previous_or_current_line(&self) -> usize {
         // Falls back to `current` when nothing has been consumed yet
         // (the very first token of the program).
@@ -380,6 +434,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             ParseFn::Literal => self.literal(),
             ParseFn::String => self.string(),
             ParseFn::Variable => self.variable(can_assign),
+            ParseFn::And => self.and(),
+            ParseFn::Or => self.or(),
         }
     }
 
@@ -398,8 +454,14 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     }
 
     fn statement(&mut self) {
-        if self.match_token(TokenType::Print) {
+        if self.match_token(TokenType::For) {
+            self.for_statement();
+        } else if self.match_token(TokenType::If) {
+            self.if_statement();
+        } else if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::While) {
+            self.while_statement();
         } else if self.match_token(TokenType::LeftBrace) {
             self.begin_scope();
             self.block();
@@ -407,6 +469,85 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         } else {
             self.expression_statement();
         }
+    }
+
+    fn for_statement(&mut self) {
+        self.begin_scope();
+
+        self.consume(TokenType::LeftParen, "Expect '(' after 'for'.");
+        if self.match_token(TokenType::Semicolon) {
+            // No initializer.
+        } else if self.match_token(TokenType::Var) {
+            self.var_declaration();
+        } else {
+            self.expression_statement();
+        }
+
+        let mut loop_start = self.chunk.len();
+        let mut exit_jump = None;
+        if !self.match_token(TokenType::Semicolon) {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after loop condition.");
+
+            exit_jump = Some(self.emit_jump(OpCode::JumpIfFalse));
+            self.emit_op(OpCode::Pop);
+        }
+
+        if !self.match_token(TokenType::RightParen) {
+            let body_jump = self.emit_jump(OpCode::Jump);
+            let increment_start = self.chunk.len();
+            self.expression();
+            self.emit_op(OpCode::Pop);
+            self.consume(TokenType::RightParen, "Expect ')' after for clauses.");
+
+            self.emit_loop(loop_start);
+            loop_start = increment_start;
+            self.patch_jump(body_jump);
+        }
+
+        self.statement();
+        self.emit_loop(loop_start);
+
+        if let Some(jump) = exit_jump {
+            self.patch_jump(jump);
+            self.emit_op(OpCode::Pop);
+        }
+
+        self.end_scope();
+    }
+
+    fn if_statement(&mut self) {
+        self.consume(TokenType::LeftParen, "Expect '(' after 'if'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let then_jump = self.emit_jump(OpCode::JumpIfFalse);
+        self.emit_op(OpCode::Pop);
+        self.statement();
+
+        let else_jump = self.emit_jump(OpCode::Jump);
+        self.patch_jump(then_jump);
+        self.emit_op(OpCode::Pop);
+
+        if self.match_token(TokenType::Else) {
+            self.statement();
+        }
+        self.patch_jump(else_jump);
+    }
+
+    fn while_statement(&mut self) {
+        let loop_start = self.chunk.len();
+        self.consume(TokenType::LeftParen, "Expect '(' after 'while'.");
+        self.expression();
+        self.consume(TokenType::RightParen, "Expect ')' after condition.");
+
+        let exit_jump = self.emit_jump(OpCode::JumpIfFalse);
+        self.emit_op(OpCode::Pop);
+        self.statement();
+        self.emit_loop(loop_start);
+
+        self.patch_jump(exit_jump);
+        self.emit_op(OpCode::Pop);
     }
 
     fn block(&mut self) {
@@ -466,6 +607,24 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             return;
         }
         self.emit_op_with_byte(OpCode::DefineGlobal, global);
+    }
+
+    fn and(&mut self) {
+        let end_jump = self.emit_jump(OpCode::JumpIfFalse);
+        self.emit_op(OpCode::Pop);
+        self.parse_precedence(Precedence::And);
+        self.patch_jump(end_jump);
+    }
+
+    fn or(&mut self) {
+        let else_jump = self.emit_jump(OpCode::JumpIfFalse);
+        let end_jump = self.emit_jump(OpCode::Jump);
+
+        self.patch_jump(else_jump);
+        self.emit_op(OpCode::Pop);
+
+        self.parse_precedence(Precedence::Or);
+        self.patch_jump(end_jump);
     }
 
     fn begin_scope(&mut self) {
@@ -1129,5 +1288,128 @@ mod tests {
         let (chunk, _) = compile_ok("{ var a = 1; print a; a = 2; print a; }");
         assert!(chunk.code.contains(&(OpCode::GetLocal as u8)));
         assert!(chunk.code.contains(&(OpCode::SetLocal as u8)));
+    }
+
+    #[test]
+    fn if_else_executes_only_selected_branch() {
+        let src = r#"
+            if (true) print "then";
+            if (false) print "bad";
+            if (false) print "bad"; else print "else";
+            if (nil) print "bad"; else print "nil falsey";
+            if ("truthy") print "string truthy";
+        "#;
+        assert_eq!(run(src).0, "then\nelse\nnil falsey\nstring truthy\n");
+    }
+
+    #[test]
+    fn logical_and_or_short_circuit_and_return_operand_values() {
+        let src = r#"
+            var a = "start";
+            print false and (a = "bad");
+            print a;
+            print true or (a = "bad");
+            print a;
+            print nil or "fallback";
+            print "left" and "right";
+        "#;
+        assert_eq!(run(src).0, "false\nstart\ntrue\nstart\nfallback\nright\n");
+    }
+
+    #[test]
+    fn logical_precedence_matches_lox() {
+        assert_eq!(eval("false or true and false"), "false\n");
+        assert_eq!(eval("(false or true) and false"), "false\n");
+        assert_eq!(eval("true or false and false"), "true\n");
+    }
+
+    #[test]
+    fn while_loop_iterates_until_condition_is_false() {
+        let src = r"
+            var i = 0;
+            while (i < 3) {
+                print i;
+                i = i + 1;
+            }
+        ";
+        assert_eq!(run(src).0, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn while_condition_may_start_false() {
+        assert_eq!(run("while (false) print 1; print 2;").0, "2\n");
+    }
+
+    #[test]
+    fn for_loop_runs_initializer_condition_increment_and_body() {
+        let src = r"
+            for (var i = 0; i < 3; i = i + 1) {
+                print i;
+            }
+        ";
+        assert_eq!(run(src).0, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn for_loop_accepts_omitted_clauses() {
+        let src = r"
+            var i = 0;
+            for (; i < 3;) {
+                print i;
+                i = i + 1;
+            }
+        ";
+        assert_eq!(run(src).0, "0\n1\n2\n");
+    }
+
+    #[test]
+    fn for_initializer_variable_is_scoped_to_loop() {
+        let err = run_err("for (var i = 0; i < 1; i = i + 1) {} print i;");
+        let VmError::Runtime { message, line } = err;
+        assert_eq!(message, "Undefined variable 'i'.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn control_flow_requires_expected_punctuation() {
+        let errs = compile_err("if true) print 1;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect '(' after 'if'."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err("while (true print 1;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect ')' after condition."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err("for (var i = 0; i < 3 i = i + 1) print i;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect ';' after loop condition."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn compiler_emits_jump_and_loop_opcodes_for_control_flow() {
+        let (chunk, _) = compile_ok(
+            r"
+            if (true) print 1; else print 2;
+            while (false) print 3;
+            ",
+        );
+        assert!(chunk.code.contains(&(OpCode::Jump as u8)));
+        assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
+        assert!(chunk.code.contains(&(OpCode::Loop as u8)));
     }
 }

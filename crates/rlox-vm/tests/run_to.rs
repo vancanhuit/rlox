@@ -128,3 +128,20 @@ fn run_to_handles_block_scoped_locals() {
     "#;
     assert_eq!(run(src).unwrap(), "block local\nglobal\n");
 }
+
+#[test]
+fn run_to_handles_control_flow() {
+    let src = r#"
+        var total = 0;
+        for (var i = 1; i <= 3; i = i + 1) {
+            total = total + i;
+        }
+        if (total == 6 and true) print total; else print "bad";
+        var j = 0;
+        while (j < 2) {
+            print false or j;
+            j = j + 1;
+        }
+    "#;
+    assert_eq!(run(src).unwrap(), "6\n0\n1\n");
+}

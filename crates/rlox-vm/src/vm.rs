@@ -209,6 +209,9 @@ impl Vm {
                     ip += 1;
                     self.stack[slot] = self.peek(0);
                 }
+                OpCode::Jump => ip = Self::jump_forward(chunk, ip),
+                OpCode::JumpIfFalse => ip = self.jump_if_false(chunk, ip),
+                OpCode::Loop => ip = Self::jump_backward(chunk, ip),
                 OpCode::Nil => self.push(Value::Nil),
                 OpCode::True => self.push(Value::Bool(true)),
                 OpCode::False => self.push(Value::Bool(false)),
@@ -268,6 +271,27 @@ impl Vm {
         heap.as_str(handle)
             .expect("global name operand references non-string object")
             .to_owned()
+    }
+
+    fn read_short(chunk: &Chunk, operand_ip: usize) -> u16 {
+        (u16::from(chunk.code[operand_ip]) << 8) | u16::from(chunk.code[operand_ip + 1])
+    }
+
+    fn jump_forward(chunk: &Chunk, operand_ip: usize) -> usize {
+        operand_ip + 2 + usize::from(Self::read_short(chunk, operand_ip))
+    }
+
+    fn jump_if_false(&self, chunk: &Chunk, operand_ip: usize) -> usize {
+        let next_ip = operand_ip + 2;
+        if self.peek(0).is_truthy() {
+            next_ip
+        } else {
+            next_ip + usize::from(Self::read_short(chunk, operand_ip))
+        }
+    }
+
+    fn jump_backward(chunk: &Chunk, operand_ip: usize) -> usize {
+        operand_ip + 2 - usize::from(Self::read_short(chunk, operand_ip))
     }
 
     /// Chapter 19 `OP_ADD`: dispatches on the operand types so the
@@ -588,5 +612,61 @@ mod tests {
 
         let mut heap = Heap::new();
         assert_eq!(run_chunk(&c, &mut heap), "2\n");
+    }
+
+    #[test]
+    fn jump_skips_forward_by_u16_operand() {
+        let mut c = Chunk::new();
+        let one = c.add_constant(Value::Number(1.0));
+        c.write_op(OpCode::Jump, 1);
+        c.write_byte(0, 1);
+        c.write_byte(3, 1);
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(one, 1);
+        c.write_op(OpCode::Print, 1);
+        c.write_op(OpCode::Return, 1);
+
+        let mut heap = Heap::new();
+        assert_eq!(run_chunk(&c, &mut heap), "");
+    }
+
+    #[test]
+    fn jump_if_false_and_loop_move_instruction_pointer() {
+        let mut c = Chunk::new();
+        let zero = c.add_constant(Value::Number(0.0));
+        let one = c.add_constant(Value::Number(1.0));
+        let two = c.add_constant(Value::Number(2.0));
+
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(zero, 1);
+        c.write_op(OpCode::GetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(two, 1);
+        c.write_op(OpCode::Less, 1);
+        c.write_op(OpCode::JumpIfFalse, 1);
+        c.write_byte(0, 1);
+        c.write_byte(15, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::GetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Print, 1);
+        c.write_op(OpCode::GetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Constant, 1);
+        c.write_byte(one, 1);
+        c.write_op(OpCode::Add, 1);
+        c.write_op(OpCode::SetLocal, 1);
+        c.write_byte(0, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::Loop, 1);
+        c.write_byte(0, 1);
+        c.write_byte(23, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::Pop, 1);
+        c.write_op(OpCode::Return, 1);
+
+        let mut heap = Heap::new();
+        assert_eq!(run_chunk(&c, &mut heap), "0\n1\n");
     }
 }

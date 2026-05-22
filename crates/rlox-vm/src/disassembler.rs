@@ -75,6 +75,11 @@ pub fn disassemble_instruction(
         Some(op @ (OpCode::GetLocal | OpCode::SetLocal)) => {
             byte_instruction(op, chunk, offset, out)
         }
+        // Jump operand: 3 bytes, prints the absolute target offset.
+        Some(op @ (OpCode::Jump | OpCode::JumpIfFalse)) => {
+            jump_instruction(op, 1, chunk, offset, out)
+        }
+        Some(OpCode::Loop) => jump_instruction(OpCode::Loop, -1, chunk, offset, out),
         // Single-byte ops (arithmetic, comparisons, literals, return).
         Some(
             op @ (OpCode::Negate
@@ -129,6 +134,21 @@ fn byte_instruction(
     let mnemonic = op.mnemonic();
     writeln!(out, "{mnemonic:<16} {slot:4}")?;
     Ok(offset + 2)
+}
+
+fn jump_instruction(
+    op: OpCode,
+    sign: i64,
+    chunk: &Chunk,
+    offset: usize,
+    out: &mut dyn Write,
+) -> Result<usize, fmt::Error> {
+    let jump = (u16::from(chunk.code[offset + 1]) << 8) | u16::from(chunk.code[offset + 2]);
+    let target =
+        i64::try_from(offset).expect("bytecode offset fits in i64") + 3 + sign * i64::from(jump);
+    let mnemonic = op.mnemonic();
+    writeln!(out, "{mnemonic:<16} {offset:4} -> {target}")?;
+    Ok(offset + 3)
 }
 
 #[cfg(test)]
@@ -224,6 +244,31 @@ mod tests {
 == locals ==
 0000    1 OP_GET_LOCAL        3
 0002    2 OP_SET_LOCAL        4
+";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn disassembles_jump_operands_with_targets() {
+        let mut chunk = Chunk::new();
+        chunk.write_op(OpCode::Jump, 1);
+        chunk.write_byte(0, 1);
+        chunk.write_byte(3, 1);
+        chunk.write_op(OpCode::JumpIfFalse, 1);
+        chunk.write_byte(0, 1);
+        chunk.write_byte(1, 1);
+        chunk.write_op(OpCode::Loop, 2);
+        chunk.write_byte(0, 2);
+        chunk.write_byte(4, 2);
+
+        let mut out = String::new();
+        disassemble_chunk(&chunk, "jumps", &mut out).unwrap();
+
+        let expected = "\
+== jumps ==
+0000    1 OP_JUMP             0 -> 6
+0003    | OP_JUMP_IF_FALSE    3 -> 7
+0006    2 OP_LOOP             6 -> 5
 ";
         assert_eq!(out, expected);
     }
