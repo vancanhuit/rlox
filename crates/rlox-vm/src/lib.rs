@@ -14,13 +14,15 @@
 //! - chapter 19: heap-backed strings, content equality, and `+`
 //!   concatenation.
 //! - chapter 21: statements, `print`, global variables, and assignment.
+//! - chapter 22: block scopes and stack-slot local variables.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
 //! [`disassembler`] helpers, the [`Vm`] interpreter, and a top-level
 //! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
 //! build wires [`run_to`] into its CLI. The current VM executes a Lox
-//! program made of top-level statements and global declarations.
+//! program made of top-level statements, global declarations, and
+//! block-scoped local declarations.
 
 pub mod chunk;
 pub mod compiler;
@@ -75,8 +77,8 @@ pub fn run_to_with(
 /// by a newline to `out`.
 ///
 /// This compatibility helper is useful for embedding and focused tests;
-/// the main VM entry point follows chapter 21 and expects full Lox
-/// statements such as `print expr;`.
+/// the main VM entry point follows chapter 22 and expects full Lox
+/// statements such as `print expr;` or `{ var local = expr; }`.
 pub fn eval_expr_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
     let wrapped = format!("print {source};");
     run_to(&wrapped, out)

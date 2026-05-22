@@ -71,6 +71,10 @@ pub fn disassemble_instruction(
         Some(
             op @ (OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal),
         ) => constant_instruction(op, chunk, offset, out),
+        // Byte operand: 2 bytes, prints a raw stack slot.
+        Some(op @ (OpCode::GetLocal | OpCode::SetLocal)) => {
+            byte_instruction(op, chunk, offset, out)
+        }
         // Single-byte ops (arithmetic, comparisons, literals, return).
         Some(
             op @ (OpCode::Negate
@@ -112,6 +116,18 @@ fn constant_instruction(
     // clox: `printf("%-16s %4d '", name, constant);` plus `printValue`.
     let value = &chunk.constants[idx as usize];
     writeln!(out, "{mnemonic:<16} {idx:4} '{value}'")?;
+    Ok(offset + 2)
+}
+
+fn byte_instruction(
+    op: OpCode,
+    chunk: &Chunk,
+    offset: usize,
+    out: &mut dyn Write,
+) -> Result<usize, fmt::Error> {
+    let slot = chunk.code[offset + 1];
+    let mnemonic = op.mnemonic();
+    writeln!(out, "{mnemonic:<16} {slot:4}")?;
     Ok(offset + 2)
 }
 
@@ -191,5 +207,24 @@ mod tests {
         let next = disassemble_instruction(&chunk, 2, &mut out).unwrap();
         // OP_RETURN is 1 byte.
         assert_eq!(next, 3);
+    }
+
+    #[test]
+    fn disassembles_local_slot_operands() {
+        let mut chunk = Chunk::new();
+        chunk.write_op(OpCode::GetLocal, 1);
+        chunk.write_byte(3, 1);
+        chunk.write_op(OpCode::SetLocal, 2);
+        chunk.write_byte(4, 2);
+
+        let mut out = String::new();
+        disassemble_chunk(&chunk, "locals", &mut out).unwrap();
+
+        let expected = "\
+== locals ==
+0000    1 OP_GET_LOCAL        3
+0002    2 OP_SET_LOCAL        4
+";
+        assert_eq!(out, expected);
     }
 }

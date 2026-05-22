@@ -1,4 +1,4 @@
-//! Chapter 21 — Global Variables.
+//! Chapter 22 — Local Variables.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -9,7 +9,8 @@
 //! Chapters 17-19 compile expression bytecode; chapter 21 grows that
 //! into a top-level program made of declarations and statements,
 //! including `print`, expression statements, global `var` declarations,
-//! global reads, and global assignment. Locals arrive in chapter 22.
+//! global reads, and global assignment. Chapter 22 adds lexical block
+//! scopes and stack-slot locals.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -107,7 +108,7 @@ enum ParseFn {
     /// compiler's [`Heap`] and an `OP_CONSTANT <idx>` instruction is
     /// emitted with a [`Value::Obj`] payload.
     String,
-    /// Parses a global variable read or assignment.
+    /// Parses a local/global variable read or assignment.
     Variable,
 }
 
@@ -116,6 +117,14 @@ struct ParseRule {
     prefix: ParseFn,
     infix: ParseFn,
     precedence: Precedence,
+}
+
+#[derive(Debug, Clone)]
+struct Local {
+    name: Token,
+    /// `None` while its initializer is compiling. A read during that
+    /// window is the chapter-22 self-initializer compile error.
+    depth: Option<usize>,
 }
 
 /// Pratt rule lookup. Mirrors clox's static `rules[]` array.
@@ -204,6 +213,11 @@ struct Compiler<'src, 'heap> {
     /// Heap that backs any [`Value::Obj`] entries emitted into
     /// `chunk.constants`.
     heap: &'heap mut Heap,
+    /// Locals currently alive on the VM stack, in stack-slot order.
+    locals: Vec<Local>,
+    /// Current lexical block depth. Top-level globals live at depth 0
+    /// and are not tracked in `locals`.
+    scope_depth: usize,
     errors: Vec<LoxError>,
     /// While in panic mode, errors are discarded until we synchronise.
     panic_mode: bool,
@@ -217,6 +231,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             current: None,
             chunk: Chunk::new(),
             heap,
+            locals: Vec::new(),
+            scope_depth: 0,
             errors: Vec::new(),
             panic_mode: false,
         }
@@ -324,7 +340,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
 
     /// Parse and emit any expression. Equivalent to clox's
     /// `expression()` — kicks off at assignment, the lowest active
-    /// precedence rung in chapter 21.
+    /// precedence rung.
     fn expression(&mut self) {
         self.parse_precedence(Precedence::Assignment);
     }
@@ -384,9 +400,20 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     fn statement(&mut self) {
         if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::LeftBrace) {
+            self.begin_scope();
+            self.block();
+            self.end_scope();
         } else {
             self.expression_statement();
         }
+    }
+
+    fn block(&mut self) {
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.declaration();
+        }
+        self.consume(TokenType::RightBrace, "Expect '}' after block.");
     }
 
     fn print_statement(&mut self) {
@@ -421,6 +448,10 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             return 0;
         }
         let name = self.previous_token().clone();
+        self.declare_variable(&name);
+        if self.scope_depth > 0 {
+            return 0;
+        }
         self.identifier_constant(&name)
     }
 
@@ -430,7 +461,80 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     }
 
     fn define_variable(&mut self, global: u8) {
+        if self.scope_depth > 0 {
+            self.mark_initialized();
+            return;
+        }
         self.emit_op_with_byte(OpCode::DefineGlobal, global);
+    }
+
+    fn begin_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn end_scope(&mut self) {
+        self.scope_depth -= 1;
+        while self
+            .locals
+            .last()
+            .is_some_and(|local| local.depth.unwrap_or(usize::MAX) > self.scope_depth)
+        {
+            self.emit_op(OpCode::Pop);
+            self.locals.pop();
+        }
+    }
+
+    fn declare_variable(&mut self, name: &Token) {
+        if self.scope_depth == 0 {
+            return;
+        }
+
+        let duplicate = self
+            .locals
+            .iter()
+            .rev()
+            .take_while(|local| local.depth.is_none_or(|depth| depth >= self.scope_depth))
+            .any(|local| local.name.lexeme == name.lexeme);
+        if duplicate {
+            self.error_at_previous("Already a variable with this name in this scope.");
+        }
+
+        self.add_local(name.clone());
+    }
+
+    fn add_local(&mut self, name: Token) {
+        if self.locals.len() > u8::MAX as usize {
+            self.error_at_previous("Too many local variables in function.");
+            return;
+        }
+        self.locals.push(Local { name, depth: None });
+    }
+
+    fn mark_initialized(&mut self) {
+        if self.scope_depth == 0 {
+            return;
+        }
+        if let Some(local) = self.locals.last_mut()
+            && local.depth.is_none()
+        {
+            local.depth = Some(self.scope_depth);
+        }
+    }
+
+    fn resolve_local(&mut self, name: &Token) -> Option<u8> {
+        let found = self
+            .locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, local)| local.name.lexeme == name.lexeme)
+            .map(|(slot, local)| (slot, local.depth.is_none()));
+
+        let (slot, is_uninitialized) = found?;
+        if is_uninitialized {
+            self.error_at_previous("Can't read local variable in its own initializer.");
+        }
+        Some(u8::try_from(slot).expect("locals are capped at 256 slots"))
     }
 
     fn literal(&mut self) {
@@ -470,12 +574,21 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     }
 
     fn named_variable(&mut self, name: &Token, can_assign: bool) {
-        let arg = self.identifier_constant(name);
+        let (get_op, set_op, arg) = if let Some(local) = self.resolve_local(name) {
+            (OpCode::GetLocal, OpCode::SetLocal, local)
+        } else {
+            (
+                OpCode::GetGlobal,
+                OpCode::SetGlobal,
+                self.identifier_constant(name),
+            )
+        };
+
         if can_assign && self.match_token(TokenType::Equal) {
             self.expression();
-            self.emit_op_with_byte(OpCode::SetGlobal, arg);
+            self.emit_op_with_byte(set_op, arg);
         } else {
-            self.emit_op_with_byte(OpCode::GetGlobal, arg);
+            self.emit_op_with_byte(get_op, arg);
         }
     }
 
@@ -577,7 +690,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
                 | TokenType::If
                 | TokenType::While
                 | TokenType::Print
-                | TokenType::Return => return,
+                | TokenType::Return
+                | TokenType::RightBrace => return,
                 _ => self.advance(),
             }
         }
@@ -907,5 +1021,113 @@ mod tests {
             .expect("second runs");
 
         assert_eq!(String::from_utf8(out).unwrap(), "42\n");
+    }
+
+    #[test]
+    fn block_scopes_shadow_and_restore_globals() {
+        let src = r#"
+            var a = "global";
+            {
+                var a = "block";
+                print a;
+            }
+            print a;
+        "#;
+        assert_eq!(run(src).0, "block\nglobal\n");
+    }
+
+    #[test]
+    fn nested_local_scopes_shadow_and_restore_outer_locals() {
+        let src = r#"
+            {
+                var a = "outer";
+                {
+                    var a = "inner";
+                    print a;
+                }
+                print a;
+            }
+        "#;
+        assert_eq!(run(src).0, "inner\nouter\n");
+    }
+
+    #[test]
+    fn local_assignment_updates_stack_slot() {
+        let src = r"
+            {
+                var a = 1;
+                a = a + 1;
+                print a;
+                print a = 3;
+                print a;
+            }
+        ";
+        assert_eq!(run(src).0, "2\n3\n3\n");
+    }
+
+    #[test]
+    fn locals_are_popped_at_scope_end() {
+        let src = r#"
+            var a = "outer";
+            {
+                var b = "inner";
+                print b;
+            }
+            print a;
+        "#;
+        assert_eq!(run(src).0, "inner\nouter\n");
+    }
+
+    #[test]
+    fn local_redeclaration_in_same_scope_is_compile_error() {
+        let errs = compile_err("{ var a = 1; var a = 2; }");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. }
+                    if message == "Already a variable with this name in this scope."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn local_can_shadow_same_name_in_nested_scope() {
+        assert_eq!(
+            run("{ var a = 1; { var a = 2; print a; } print a; }").0,
+            "2\n1\n"
+        );
+    }
+
+    #[test]
+    fn local_initializer_cannot_read_own_name() {
+        let errs = compile_err("{ var a = a; }");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. }
+                    if message == "Can't read local variable in its own initializer."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn missing_block_close_reports_parse_error() {
+        let errs = compile_err("{ print 1;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect '}' after block."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn compiler_emits_local_opcodes_for_block_variables() {
+        let (chunk, _) = compile_ok("{ var a = 1; print a; a = 2; print a; }");
+        assert!(chunk.code.contains(&(OpCode::GetLocal as u8)));
+        assert!(chunk.code.contains(&(OpCode::SetLocal as u8)));
     }
 }
