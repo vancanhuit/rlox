@@ -1,12 +1,12 @@
 //! `rlox-tree` — a Rust port of the tree-walk Lox interpreter from
 //! <https://craftinginterpreters.com>.
 //!
-//! Milestone 1 covered chapters 4–7 (scanner, parser, expression
-//! evaluator). Chapter 8 adds statements, variable declarations, and
-//! lexical scoping; the public API now distinguishes between
-//! expression-level entry points ([`parse`], [`evaluate`]) and
-//! program-level entry points ([`parse_program`], [`Interpreter`],
-//! [`run`]/[`run_to`]).
+//! This crate covers the tree-walk interpreter from chapters 4–13:
+//! scanning, parsing, expression evaluation, statements, lexical
+//! scoping, functions, closures, resolver diagnostics, classes, and
+//! inheritance. The public API distinguishes expression-level entry
+//! points ([`parse`], [`evaluate`]) from program-level entry points
+//! ([`parse_program`], [`Interpreter`], [`run`]/[`run_to`]).
 //!
 //! Chapter 16 of milestone 3 extracted the lexer + token types + base
 //! error enum into [`rlox_shared`]. This crate re-exports them through

@@ -1,7 +1,7 @@
 //! `rlox-shared` — front-end primitives shared by both Lox interpreter
 //! backends (`rlox-tree`, `rlox-vm`).
 //!
-//! The shared crate currently houses:
+//! The shared crate houses:
 //!
 //! - [`token`] — `Token`, `TokenType`, `Literal` (the on-the-wire
 //!   representation of a Lox lexeme).
@@ -17,8 +17,7 @@
 //!     compiler for chapter 16 (*Scanning on Demand*).
 //!
 //! Both APIs share the same scanning logic via an internal `State`
-//! machine, so any future scanner change automatically lights up in
-//! both modes.
+//! machine, so scanner behavior stays consistent in both modes.
 
 pub mod error;
 pub mod scanner;

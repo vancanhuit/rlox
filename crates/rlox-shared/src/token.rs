@@ -1,7 +1,7 @@
 //! Lexical tokens produced by the scanner.
 //!
 //! The `Display` impls intentionally match the upstream Crafting Interpreters
-//! test format (e.g. `NUMBER 123 123.0`, `DOT . null`, `EOF  null`) so a future
+//! test format (e.g. `NUMBER 123 123.0`, `DOT . null`, `EOF  null`) so any
 //! token-dump mode can reuse them verbatim.
 
 use std::fmt;

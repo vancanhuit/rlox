@@ -1,4 +1,4 @@
-//! Chapter 29 — Superclasses.
+//! Single-pass bytecode compiler for the VM backend.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -16,11 +16,12 @@
 //! Chapter 25 adds closures and upvalues for captured locals. Chapter
 //! 27 adds class declarations plus instance field get/set expressions.
 //! Chapter 28 adds methods, `this`, initializers, and optimized method
-//! invocation bytecode. Chapter 29 completes the language with
-//! superclass inheritance and `super` calls.
+//! invocation bytecode. Chapter 29 adds the final language feature:
+//! superclass inheritance and `super` calls. Chapter 30's optimization
+//! lives in the heap representation rather than in the compiler.
 //!
-//! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
-//! function pointers) and resolved through [`Compiler::run_parse_fn`];
+//! Pratt actions are encoded as a `ParseFn` enum (rather than as
+//! function pointers) and resolved through `Compiler::run_parse_fn`;
 //! the borrow checker is happier when dispatch goes through a `match`
 //! on `&mut self` rather than through closures or `fn` items.
 //!
@@ -301,7 +302,7 @@ const fn rule_for(t: TokenType) -> ParseRule {
                 precedence: Precedence::Comparison,
             }
         }
-        // Every other token has no rule yet.
+        // Every other token is not an expression parser entry.
         _ => ParseRule {
             prefix: ParseFn::None,
             infix: ParseFn::None,

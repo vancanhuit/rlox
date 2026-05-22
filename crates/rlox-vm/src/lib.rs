@@ -1,11 +1,7 @@
 //! `rlox-vm` — a Rust port of the bytecode-VM Lox interpreter from
 //! Part III of <https://craftinginterpreters.com>.
 //!
-//! Milestone 3 layers chapters 14–30 onto the workspace one PR at a
-//! time; the `chunk` module covers chapter 14 (the on-disk encoding for
-//! a unit of compiled bytecode plus an offline disassembler).
-//!
-//! Implemented so far:
+//! The crate covers chapters 14–30:
 //!
 //! - chapters 14-17: chunks, disassembly, stack VM, lazy scanning, and
 //!   single-pass Pratt compilation to bytecode.
@@ -26,15 +22,11 @@
 //! - chapter 30: safe string interning as the VM's optimization pass;
 //!   NaN-boxing stays skipped under the workspace `unsafe_code` ban.
 //!
-//! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
-//! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
-//! [`disassembler`] helpers, the [`Vm`] interpreter, and a top-level
-//! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
-//! build wires [`run_to`] into its CLI. The current VM executes a Lox
-//! program made of top-level statements, global/local declarations,
-//! structured control flow, first-class functions, closures, classes,
-//! instances, dynamic fields, methods, initializers, superclasses,
-//! `super`, VM-managed object reclamation, and interned strings.
+//! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the [`compiler`]
+//! (single-pass Pratt over [`rlox_shared::Scanner`]), the
+//! [`disassembler`] helpers, the [`Vm`] interpreter, and top-level
+//! [`run_to`] helpers. The umbrella `rlox` binary's `--features vm`
+//! build wires this backend into the CLI.
 
 pub mod chunk;
 pub mod compiler;
@@ -91,10 +83,9 @@ pub fn run_to_with(
 /// Compile and execute a single expression, writing its value followed
 /// by a newline to `out`.
 ///
-/// This compatibility helper is useful for embedding and focused tests;
-/// the main VM entry point follows chapter 23 and expects full Lox
-/// statements such as `print expr;`, `{ var local = expr; }`, or
-/// `while (condition) statement;`.
+/// This compatibility helper is useful for embedding and focused tests
+/// when the caller wants expression-style input. Full programs should use
+/// [`run_to`] or [`run_to_with`].
 pub fn eval_expr_to(source: &str, out: &mut dyn Write) -> std::result::Result<(), Vec<LoxError>> {
     let wrapped = format!("print {source};");
     run_to(&wrapped, out)

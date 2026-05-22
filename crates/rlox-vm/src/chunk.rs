@@ -314,14 +314,14 @@ impl Chunk {
     ///
     /// Panics if the constant pool already holds 256 entries; the
     /// chapter 14 encoding can't address more than that. Chapter 14's
-    /// challenge problem (`OP_CONSTANT_LONG`) lifts the limit but is
-    /// out of scope for this PR.
+    /// challenge problem (`OP_CONSTANT_LONG`) lifts the limit, but this
+    /// VM keeps the book's base one-byte operand encoding.
     pub fn add_constant(&mut self, value: Value) -> u8 {
         let idx = self.constants.len();
         assert!(
             idx < u8::MAX as usize + 1,
             "constant pool exceeds OP_CONSTANT's u8 operand range; \
-             OP_CONSTANT_LONG (chapter 14 challenge) not yet implemented",
+             OP_CONSTANT_LONG (chapter 14 challenge) is not supported",
         );
         self.constants.push(value);
         u8::try_from(idx).expect("bounds-checked above")
