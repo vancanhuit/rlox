@@ -121,10 +121,12 @@ jobs:
         # `--current` resolves the previous semver tag from git's tag
         # graph automatically. Output is written to dist/CHANGELOG.md
         # via the action's $OUTPUT env contract.
+        # Stable releases ignore prerelease tags so a temporary tag such
+        # as `v0.3.0-dev` does not split or duplicate the final notes.
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --current
+          args: --current ${{ contains(github.ref_name, '-') && '' || '--ignore-tags ".*-.*"' }}
         env:
           OUTPUT: dist/CHANGELOG.md
 
