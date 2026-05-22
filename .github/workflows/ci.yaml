@@ -43,8 +43,9 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --locked
 
-  # Same target matrix as the release workflow, but produces *development*
-  # binaries on every PR and every push to main. The version label is
+  # Same target architecture matrix as the release workflow, plus one leg per
+  # backend, but produces *development* binaries on every PR and every push to
+  # main. The version label is
   # derived from `git describe --tags --always --dirty`, falling back to
   # `dev-<sha>` so a developer can always identify which commit a given
   # artifact came from. Artifacts are retained for 14 days; the release
