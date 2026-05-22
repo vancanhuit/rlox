@@ -6,7 +6,7 @@
 //! The tests here drive the same code path directly so coverage tooling
 //! sees it.
 
-use rlox_vm::{LoxError, run_to};
+use rlox_vm::{Heap, LoxError, Vm, run_to, run_to_with};
 
 /// Helper: run `src` through the VM, return whatever it wrote to its
 /// output sink.
@@ -199,4 +199,34 @@ fn run_to_handles_nested_closure_capture() {
         outer()()();
     "#;
     assert_eq!(run(src).unwrap(), "outer\n");
+}
+
+#[test]
+fn run_to_with_gc_preserves_globals_and_closed_upvalues() {
+    let mut vm = Vm::new();
+    let mut heap = Heap::new();
+    let mut out = Vec::new();
+    let setup = r#"
+        fun makeClosure() {
+            var data = "closed";
+            fun read() {
+                return data;
+            }
+            return read;
+        }
+
+        var reader = makeClosure();
+        var label = "global";
+        "garbage";
+    "#;
+    run_to_with(setup, &mut vm, &mut heap, &mut out).unwrap();
+
+    let stats = vm.collect_garbage(&mut heap);
+    assert!(
+        stats.collected > 0,
+        "expected script-only constants to be swept"
+    );
+
+    run_to_with("print reader(); print label;", &mut vm, &mut heap, &mut out).unwrap();
+    assert_eq!(String::from_utf8(out).unwrap(), "closed\nglobal\n");
 }

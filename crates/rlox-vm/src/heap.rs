@@ -2,20 +2,23 @@
 //!
 //! clox uses an intrusive linked list of `Obj*` nodes plus manual
 //! ownership tracking; chapter 26 adds a mark-sweep GC by walking the
-//! same list and `free`ing white nodes. We keep the design GC-ready
-//! while staying within the workspace-wide `unsafe_code = "forbid"`
-//! lint by storing every object in a `Vec<Obj>` and handing out opaque
-//! [`Handle`] indices instead of raw pointers.
+//! same list and `free`ing white nodes. This crate keeps the same
+//! reachability model while staying within the workspace-wide
+//! `unsafe_code = "forbid"` lint by storing every object in heap slots
+//! and handing out opaque [`Handle`] values instead of raw pointers.
 //!
-//! - **Allocation** appends to the vector and returns the new index.
+//! - **Allocation** stores the object in either a reclaimed slot or a
+//!   fresh slot and returns its handle.
 //! - **Lookup** is `O(1)` via `Heap::get(handle)`.
 //! - **Equality** can dereference through the heap and compare contents
 //!   ([`values_equal`](crate::value::values_equal)). This keeps string
 //!   equality correct without requiring the custom interning table from
 //!   clox chapter 20.
-//! - **Garbage collection** in chapter 26 will replace the bare `Vec`
-//!   with a free-list-friendly storage and possibly grow [`Handle`]
-//!   with a generation tag. Today the heap only grows.
+//! - **Garbage collection** is precise mark-sweep: roots are marked,
+//!   object references are traced through a gray stack, and unmarked
+//!   slots are swept into a free list. [`Handle`] includes a generation
+//!   tag so using a stale handle after collection panics instead of
+//!   aliasing a later object that reused the same slot.
 //!
 //! Today the heap stores strings plus callable objects:
 //! [`Obj::Function`] for compiled function prototypes, [`Obj::Closure`]
@@ -29,21 +32,26 @@ use std::fmt;
 use crate::chunk::Chunk;
 use crate::value::Value;
 
+const INITIAL_GC_THRESHOLD: usize = 1024;
+const GC_HEAP_GROW_FACTOR: usize = 2;
+
 /// Opaque handle into a [`Heap`].
 ///
-/// The internal index is intentionally not part of the public API:
-/// chapter 26 will likely tag it with a generation counter for safer
-/// debugging, and we don't want callers to start doing arithmetic on
-/// raw indices in the meantime.
+/// The internal slot index and generation are intentionally not part of
+/// the public API; callers should treat handles as copyable capabilities
+/// that remain meaningful only while the referenced object is live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Handle(u32);
+pub struct Handle {
+    index: u32,
+    generation: u32,
+}
 
 impl fmt::Display for Handle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // The disassembler / debug trace emit `<obj#N>` for an
         // un-dereferenced handle, matching the visual style of clox's
         // `printObject` shorthand for unknown types.
-        write!(f, "obj#{}", self.0)
+        write!(f, "obj#{}", self.index)
     }
 }
 
@@ -177,13 +185,93 @@ pub enum Obj {
     Native(NativeFunction),
 }
 
+/// Roots that seed one garbage-collection run.
+///
+/// VM roots are usually stack/global values plus handles stored in call
+/// frames and open-upvalue lists. `chunks` covers compiled code that is
+/// borrowed by the VM, such as the top-level script chunk, whose
+/// constants may contain object handles.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GcRoots<'a> {
+    /// Direct value roots.
+    pub values: &'a [Value],
+    /// Direct object-handle roots.
+    pub handles: &'a [Handle],
+    /// Compiled chunks whose constants should be considered roots.
+    pub chunks: &'a [&'a Chunk],
+}
+
+impl<'a> GcRoots<'a> {
+    /// Empty root set.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Root only the supplied values.
+    #[must_use]
+    pub const fn values(values: &'a [Value]) -> Self {
+        Self {
+            values,
+            handles: &[],
+            chunks: &[],
+        }
+    }
+}
+
+/// Object-count statistics for one collection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GcStats {
+    /// Live object count before marking and sweeping.
+    pub before: usize,
+    /// Live object count after sweeping.
+    pub after: usize,
+    /// Number of objects reclaimed.
+    pub collected: usize,
+    /// Object-count threshold for the next automatic VM collection.
+    pub next_gc: usize,
+}
+
+#[derive(Debug)]
+struct HeapSlot {
+    obj: Option<Obj>,
+    is_marked: bool,
+    generation: u32,
+}
+
+impl HeapSlot {
+    fn occupied(obj: Obj) -> Self {
+        Self {
+            obj: Some(obj),
+            is_marked: false,
+            generation: 0,
+        }
+    }
+}
+
 /// VM heap. Owns every object referenced by a [`Value::Obj`]
 /// elsewhere in the runtime.
 ///
 /// [`Value::Obj`]: crate::value::Value::Obj
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Heap {
-    objs: Vec<Obj>,
+    slots: Vec<HeapSlot>,
+    free: Vec<u32>,
+    gray_stack: Vec<Handle>,
+    live: usize,
+    next_gc: usize,
+}
+
+impl Default for Heap {
+    fn default() -> Self {
+        Self {
+            slots: Vec::new(),
+            free: Vec::new(),
+            gray_stack: Vec::new(),
+            live: 0,
+            next_gc: INITIAL_GC_THRESHOLD,
+        }
+    }
 }
 
 impl Heap {
@@ -221,24 +309,47 @@ impl Heap {
     }
 
     fn alloc(&mut self, obj: Obj) -> Handle {
-        let idx =
-            u32::try_from(self.objs.len()).expect("heap exceeded u32 capacity (4 billion objects)");
-        self.objs.push(obj);
-        Handle(idx)
+        self.live += 1;
+
+        if let Some(index) = self.free.pop() {
+            let slot = &mut self.slots[index as usize];
+            debug_assert!(slot.obj.is_none());
+            slot.obj = Some(obj);
+            slot.is_marked = false;
+            return Handle {
+                index,
+                generation: slot.generation,
+            };
+        }
+
+        let index =
+            u32::try_from(self.slots.len()).expect("heap exceeded u32 capacity (4 billion slots)");
+        self.slots.push(HeapSlot::occupied(obj));
+        Handle {
+            index,
+            generation: 0,
+        }
     }
 
-    /// Borrow the object referenced by `h`. Panics on a stale handle —
-    /// today that can only happen through programmer error since
-    /// nothing deallocates yet.
+    /// Borrow the object referenced by `h`. Panics if `h` is stale
+    /// because the object was swept, or invalid because it came from a
+    /// different heap.
     #[must_use]
     pub fn get(&self, h: Handle) -> &Obj {
-        &self.objs[h.0 as usize]
+        self.slots[self.valid_slot_index(h)]
+            .obj
+            .as_ref()
+            .unwrap_or_else(|| panic!("stale heap handle {h:?}"))
     }
 
     /// Mutably borrow the object referenced by `h`.
     #[must_use]
     pub fn get_mut(&mut self, h: Handle) -> &mut Obj {
-        &mut self.objs[h.0 as usize]
+        let index = self.valid_slot_index(h);
+        self.slots[index]
+            .obj
+            .as_mut()
+            .unwrap_or_else(|| panic!("stale heap handle {h:?}"))
     }
 
     /// Convenience accessor for string objects. Returns `None` if the
@@ -305,17 +416,151 @@ impl Heap {
         }
     }
 
-    /// Number of objects currently allocated. Useful for tests; this
-    /// will become a less interesting number once chapter 26 adds GC.
+    /// Number of live objects currently allocated.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.objs.len()
+        self.live
     }
 
     /// `true` if no objects are allocated.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.objs.is_empty()
+        self.live == 0
+    }
+
+    /// `true` if the VM should run a collection at its next safe point.
+    #[must_use]
+    pub fn needs_collection(&self) -> bool {
+        self.live > self.next_gc
+    }
+
+    /// Force the next VM allocation safe point to collect.
+    ///
+    /// This is primarily a diagnostic hook for stress-testing root
+    /// handling without exposing the collector's threshold as public
+    /// tuning API.
+    #[cfg(test)]
+    pub(crate) fn force_next_collection(&mut self) {
+        self.next_gc = 0;
+    }
+
+    /// Run a precise mark-sweep collection from `roots`.
+    #[must_use]
+    pub fn collect_garbage(&mut self, roots: GcRoots<'_>) -> GcStats {
+        let before = self.live;
+        self.gray_stack.clear();
+
+        for value in roots.values {
+            self.mark_value(*value);
+        }
+        for handle in roots.handles {
+            self.mark_handle(*handle);
+        }
+        for chunk in roots.chunks {
+            self.mark_chunk(chunk);
+        }
+
+        self.trace_references();
+        self.sweep();
+        self.next_gc = self
+            .live
+            .saturating_mul(GC_HEAP_GROW_FACTOR)
+            .max(INITIAL_GC_THRESHOLD);
+
+        GcStats {
+            before,
+            after: self.live,
+            collected: before - self.live,
+            next_gc: self.next_gc,
+        }
+    }
+
+    fn mark_chunk(&mut self, chunk: &Chunk) {
+        for value in &chunk.constants {
+            self.mark_value(*value);
+        }
+    }
+
+    fn mark_value(&mut self, value: Value) {
+        if let Value::Obj(handle) = value {
+            self.mark_handle(handle);
+        }
+    }
+
+    fn mark_handle(&mut self, handle: Handle) {
+        let index = self.valid_slot_index(handle);
+        let slot = &mut self.slots[index];
+        assert!(slot.obj.is_some(), "stale heap handle {handle:?}");
+        if slot.is_marked {
+            return;
+        }
+
+        slot.is_marked = true;
+        self.gray_stack.push(handle);
+    }
+
+    fn trace_references(&mut self) {
+        while let Some(handle) = self.gray_stack.pop() {
+            self.blacken_object(handle);
+        }
+    }
+
+    fn blacken_object(&mut self, handle: Handle) {
+        let (values, handles) = match self.get(handle) {
+            Obj::Str(_) | Obj::Native(_) => (Vec::new(), Vec::new()),
+            Obj::Function(function) => (function.chunk.constants.clone(), Vec::new()),
+            Obj::Closure(closure) => {
+                let mut handles = Vec::with_capacity(1 + closure.upvalues.len());
+                handles.push(closure.function);
+                handles.extend(closure.upvalues.iter().copied());
+                (Vec::new(), handles)
+            }
+            Obj::Upvalue(upvalue) => match upvalue.location {
+                UpvalueLocation::Open(_) => (Vec::new(), Vec::new()),
+                UpvalueLocation::Closed(value) => (vec![value], Vec::new()),
+            },
+        };
+
+        for value in values {
+            self.mark_value(value);
+        }
+        for handle in handles {
+            self.mark_handle(handle);
+        }
+    }
+
+    fn sweep(&mut self) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.obj.is_none() {
+                continue;
+            }
+
+            if slot.is_marked {
+                slot.is_marked = false;
+                continue;
+            }
+
+            slot.obj = None;
+            slot.generation = slot
+                .generation
+                .checked_add(1)
+                .expect("heap handle generation overflowed");
+            self.live -= 1;
+            self.free
+                .push(u32::try_from(index).expect("heap slot index exceeded u32 capacity"));
+        }
+    }
+
+    fn valid_slot_index(&self, handle: Handle) -> usize {
+        let slot = self
+            .slots
+            .get(handle.index as usize)
+            .unwrap_or_else(|| panic!("invalid heap handle {handle:?}"));
+        assert_eq!(
+            slot.generation, handle.generation,
+            "stale heap handle {handle:?}"
+        );
+        handle.index as usize
     }
 }
 
@@ -376,5 +621,91 @@ mod tests {
         assert_eq!(h.as_native(native).unwrap().name, "clock");
         assert_eq!(h.as_str(function), None);
         assert!(h.as_function(native).is_none());
+    }
+
+    #[test]
+    fn collect_garbage_sweeps_unreachable_objects() {
+        let mut h = Heap::new();
+        let live = h.alloc_string("live");
+        let dead = h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots::values(&[Value::Obj(live)]));
+
+        assert_eq!(
+            stats,
+            GcStats {
+                before: 2,
+                after: 1,
+                collected: 1,
+                next_gc: INITIAL_GC_THRESHOLD,
+            }
+        );
+        assert_eq!(h.as_str(live), Some("live"));
+        assert_eq!(h.len(), 1);
+
+        let reused = h.alloc_string("reused");
+        assert_ne!(dead, reused);
+        assert_eq!(reused.to_string(), dead.to_string());
+        assert_eq!(h.as_str(reused), Some("reused"));
+    }
+
+    #[test]
+    fn collect_garbage_traces_closure_function_and_closed_upvalue() {
+        let mut h = Heap::new();
+        let captured = h.alloc_string("captured");
+        let upvalue = h.alloc_upvalue(Upvalue {
+            location: UpvalueLocation::Closed(Value::Obj(captured)),
+        });
+
+        let constant = h.alloc_string("constant");
+        let mut chunk = Chunk::new();
+        chunk.add_constant(Value::Obj(constant));
+        let function =
+            h.alloc_function(Function::with_upvalues(Some("f".to_string()), 0, 1, chunk));
+        let closure = h.alloc_closure(Closure::new(function, vec![upvalue]));
+        h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots {
+            values: &[],
+            handles: &[closure],
+            chunks: &[],
+        });
+
+        assert_eq!(stats.before, 6);
+        assert_eq!(stats.after, 5);
+        assert_eq!(stats.collected, 1);
+        assert_eq!(h.as_str(captured), Some("captured"));
+        assert_eq!(h.as_str(constant), Some("constant"));
+        assert!(h.as_closure(closure).is_some());
+        assert!(h.as_function(function).is_some());
+        assert!(h.as_upvalue(upvalue).is_some());
+    }
+
+    #[test]
+    fn collect_garbage_marks_chunk_constants() {
+        let mut h = Heap::new();
+        let live = h.alloc_string("literal");
+        let mut chunk = Chunk::new();
+        chunk.add_constant(Value::Obj(live));
+        h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots {
+            values: &[],
+            handles: &[],
+            chunks: &[&chunk],
+        });
+
+        assert_eq!(stats.before, 2);
+        assert_eq!(stats.after, 1);
+        assert_eq!(h.as_str(live), Some("literal"));
+    }
+
+    #[test]
+    #[should_panic(expected = "stale heap handle")]
+    fn stale_handle_panics_after_collection() {
+        let mut h = Heap::new();
+        let dead = h.alloc_string("dead");
+        let _ = h.collect_garbage(GcRoots::empty());
+        let _ = h.get(dead);
     }
 }
