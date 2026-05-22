@@ -23,6 +23,8 @@
 use std::fmt::{self, Write};
 
 use crate::chunk::{Chunk, OpCode};
+use crate::heap::Heap;
+use crate::value::Value;
 
 /// Disassemble an entire chunk, prefixed with `== <name> ==`.
 ///
@@ -30,10 +32,25 @@ use crate::chunk::{Chunk, OpCode};
 ///
 /// Returns any [`fmt::Error`] from `out` unchanged.
 pub fn disassemble_chunk(chunk: &Chunk, name: &str, out: &mut dyn Write) -> fmt::Result {
+    disassemble_chunk_with_heap(chunk, name, None, out)
+}
+
+/// Disassemble an entire chunk with heap-aware rendering for closure
+/// operands and object constants.
+///
+/// # Errors
+///
+/// Returns any [`fmt::Error`] from `out` unchanged.
+pub fn disassemble_chunk_with_heap(
+    chunk: &Chunk,
+    name: &str,
+    heap: Option<&Heap>,
+    out: &mut dyn Write,
+) -> fmt::Result {
     writeln!(out, "== {name} ==")?;
     let mut offset = 0;
     while offset < chunk.code.len() {
-        offset = disassemble_instruction(chunk, offset, out)?;
+        offset = disassemble_instruction_with_heap(chunk, offset, heap, out)?;
     }
     Ok(())
 }
@@ -49,6 +66,21 @@ pub fn disassemble_chunk(chunk: &Chunk, name: &str, out: &mut dyn Write) -> fmt:
 pub fn disassemble_instruction(
     chunk: &Chunk,
     offset: usize,
+    out: &mut dyn Write,
+) -> Result<usize, fmt::Error> {
+    disassemble_instruction_with_heap(chunk, offset, None, out)
+}
+
+/// Disassemble one instruction, using `heap` when available to render
+/// closure function metadata and skip closure upvalue operands.
+///
+/// # Errors
+///
+/// Returns any [`fmt::Error`] from `out` unchanged.
+pub fn disassemble_instruction_with_heap(
+    chunk: &Chunk,
+    offset: usize,
+    heap: Option<&Heap>,
     out: &mut dyn Write,
 ) -> Result<usize, fmt::Error> {
     write!(out, "{offset:04} ")?;
@@ -71,10 +103,15 @@ pub fn disassemble_instruction(
         Some(
             op @ (OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal),
         ) => constant_instruction(op, chunk, offset, out),
+        Some(OpCode::Closure) => closure_instruction(chunk, offset, heap, out),
         // Byte operand: 2 bytes, prints a raw stack slot or argument count.
-        Some(op @ (OpCode::GetLocal | OpCode::SetLocal | OpCode::Call)) => {
-            byte_instruction(op, chunk, offset, out)
-        }
+        Some(
+            op @ (OpCode::GetLocal
+            | OpCode::SetLocal
+            | OpCode::GetUpvalue
+            | OpCode::SetUpvalue
+            | OpCode::Call),
+        ) => byte_instruction(op, chunk, offset, out),
         // Jump operand: 3 bytes, prints the absolute target offset.
         Some(op @ (OpCode::Jump | OpCode::JumpIfFalse)) => {
             jump_instruction(op, 1, chunk, offset, out)
@@ -96,13 +133,44 @@ pub fn disassemble_instruction(
             | OpCode::Greater
             | OpCode::Less
             | OpCode::Pop
-            | OpCode::Print),
+            | OpCode::Print
+            | OpCode::CloseUpvalue),
         ) => simple_instruction(op, offset, out),
         None => {
             writeln!(out, "?? {byte:#04x}")?;
             Ok(offset + 1)
         }
     }
+}
+
+fn closure_instruction(
+    chunk: &Chunk,
+    offset: usize,
+    heap: Option<&Heap>,
+    out: &mut dyn Write,
+) -> Result<usize, fmt::Error> {
+    let idx = chunk.code[offset + 1];
+    let mnemonic = OpCode::Closure.mnemonic();
+    let value = chunk.constants[idx as usize];
+    if let Some(heap) = heap {
+        writeln!(out, "{mnemonic:<16} {idx:4} '{}'", value.display(heap))?;
+        let mut next = offset + 2;
+        if let Value::Obj(function) = value
+            && let Some(function) = heap.as_function(function)
+        {
+            for _ in 0..function.upvalue_count {
+                let is_local = chunk.code[next];
+                let index = chunk.code[next + 1];
+                let kind = if is_local == 1 { "local" } else { "upvalue" };
+                writeln!(out, "{next:04}      | {kind:>21} {index}")?;
+                next += 2;
+            }
+            return Ok(next);
+        }
+    } else {
+        writeln!(out, "{mnemonic:<16} {idx:4} '{value}'")?;
+    }
+    Ok(offset + 2)
 }
 
 fn simple_instruction(op: OpCode, offset: usize, out: &mut dyn Write) -> Result<usize, fmt::Error> {
@@ -154,6 +222,7 @@ fn jump_instruction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heap::{Function, Heap};
     use crate::value::Value;
 
     /// The book's chapter-14 reference example, byte-for-byte.
@@ -274,5 +343,31 @@ mod tests {
 0006    2 OP_LOOP             6 -> 5
 ";
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn disassembles_closure_upvalue_operands_with_heap() {
+        let mut heap = Heap::new();
+        let function = heap.alloc_function(Function::with_upvalues(
+            Some("inner".to_string()),
+            0,
+            1,
+            Chunk::new(),
+        ));
+        let mut chunk = Chunk::new();
+        let idx = chunk.add_constant(Value::Obj(function));
+        chunk.write_op(OpCode::Closure, 1);
+        chunk.write_byte(idx, 1);
+        chunk.write_byte(1, 1);
+        chunk.write_byte(2, 1);
+        chunk.write_op(OpCode::Return, 1);
+
+        let mut out = String::new();
+        let next = disassemble_instruction_with_heap(&chunk, 0, Some(&heap), &mut out).unwrap();
+
+        assert_eq!(next, 4);
+        assert!(out.contains("OP_CLOSURE"));
+        assert!(out.contains("<fn inner>"));
+        assert!(out.contains("local 2"));
     }
 }

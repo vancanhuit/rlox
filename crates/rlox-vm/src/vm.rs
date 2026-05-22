@@ -31,8 +31,8 @@ use std::io::Write as IoWrite;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chunk::{Chunk, OpCode};
-use crate::disassembler::disassemble_instruction;
-use crate::heap::{Handle, Heap, NativeFunction, Obj};
+use crate::disassembler::disassemble_instruction_with_heap;
+use crate::heap::{Closure, Handle, Heap, NativeFunction, Obj, Upvalue, UpvalueLocation};
 use crate::value::{Value, values_equal};
 
 /// A runtime error surfaced by the VM.
@@ -80,15 +80,17 @@ pub struct Vm {
     /// 20 table.
     globals: HashMap<String, Value>,
     /// Active call frames. A script frame borrows the chunk passed to
-    /// `interpret`; function frames point at heap-allocated function
+    /// `interpret`; function frames point at heap-allocated closure
     /// objects.
     frames: Vec<CallFrame>,
+    /// Open upvalues pointing at stack slots in active call frames.
+    open_upvalues: Vec<Handle>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FrameFunction {
     Script,
-    Function(Handle),
+    Closure(Handle),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +166,7 @@ impl Vm {
         // reuse the allocation rather than reallocating.
         self.stack.clear();
         self.frames.clear();
+        self.open_upvalues.clear();
         self.frames.push(CallFrame {
             function: FrameFunction::Script,
             ip: 0,
@@ -179,7 +182,7 @@ impl Vm {
             if let Some(out) = trace.as_deref_mut() {
                 let ip = self.frames[frame_index].ip;
                 let frame_chunk = self.frame_chunk(chunk, heap, frame_index);
-                trace_step(frame_chunk, ip, &self.stack, out);
+                trace_step(frame_chunk, ip, heap, &self.stack, out);
             }
 
             // The opcode lives at `op_ip`; chapter 18 introduces runtime
@@ -211,6 +214,7 @@ impl Vm {
                 let value = self.read_constant(chunk, heap, frame_index);
                 self.push(value);
             }
+            OpCode::Closure => self.closure(chunk, heap, frame_index),
             OpCode::Pop => {
                 self.pop();
             }
@@ -236,6 +240,8 @@ impl Vm {
                 let absolute = self.frames[frame_index].slot_start + slot;
                 self.stack[absolute] = self.peek(0);
             }
+            OpCode::GetUpvalue => self.get_upvalue(chunk, heap, frame_index),
+            OpCode::SetUpvalue => self.set_upvalue(chunk, heap, frame_index),
             OpCode::Jump => {
                 let jump = usize::from(self.read_short(chunk, heap, frame_index));
                 self.frames[frame_index].ip += jump;
@@ -274,7 +280,11 @@ impl Vm {
             OpCode::Subtract => self.binary_arith(line, |a, b| a - b)?,
             OpCode::Multiply => self.binary_arith(line, |a, b| a * b)?,
             OpCode::Divide => self.binary_arith(line, |a, b| a / b)?,
-            OpCode::Return => return Ok(self.return_from_frame(frame_index)),
+            OpCode::Return => return Ok(self.return_from_frame(frame_index, heap)),
+            OpCode::CloseUpvalue => {
+                self.close_upvalues(self.stack.len() - 1, heap);
+                self.pop();
+            }
         }
         Ok(Step::Continue)
     }
@@ -291,6 +301,131 @@ impl Vm {
 
     fn peek(&self, distance: usize) -> Value {
         self.stack[self.stack.len() - 1 - distance]
+    }
+
+    fn closure(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
+        let Value::Obj(function) = self.read_constant(chunk, heap, frame_index) else {
+            panic!("closure operand does not reference a function object");
+        };
+        let upvalue_count = heap
+            .as_function(function)
+            .expect("closure operand references non-function object")
+            .upvalue_count;
+        let mut upvalues = Vec::with_capacity(usize::from(upvalue_count));
+
+        for _ in 0..upvalue_count {
+            let is_local = self.read_byte(chunk, heap, frame_index) == 1;
+            let index = self.read_byte(chunk, heap, frame_index);
+            let upvalue = if is_local {
+                let slot = self.frames[frame_index].slot_start + usize::from(index);
+                self.capture_upvalue(slot, heap)
+            } else {
+                let enclosing = self.frame_closure(frame_index);
+                heap.as_closure(enclosing)
+                    .expect("enclosing frame points at a non-closure object")
+                    .upvalues[usize::from(index)]
+            };
+            upvalues.push(upvalue);
+        }
+
+        let closure = heap.alloc_closure(Closure::new(function, upvalues));
+        self.push(Value::Obj(closure));
+    }
+
+    fn get_upvalue(&mut self, chunk: &Chunk, heap: &Heap, frame_index: usize) {
+        let slot = self.read_byte(chunk, heap, frame_index);
+        let upvalue = self.frame_upvalue(heap, frame_index, slot);
+        let value = match heap
+            .as_upvalue(upvalue)
+            .expect("closure references a non-upvalue object")
+            .location
+        {
+            UpvalueLocation::Open(slot) => self.stack[slot],
+            UpvalueLocation::Closed(value) => value,
+        };
+        self.push(value);
+    }
+
+    fn set_upvalue(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
+        let slot = self.read_byte(chunk, heap, frame_index);
+        let upvalue = self.frame_upvalue(heap, frame_index, slot);
+        let value = self.peek(0);
+        match heap
+            .as_upvalue(upvalue)
+            .expect("closure references a non-upvalue object")
+            .location
+        {
+            UpvalueLocation::Open(slot) => self.stack[slot] = value,
+            UpvalueLocation::Closed(_) => {
+                heap.as_upvalue_mut(upvalue)
+                    .expect("closure references a non-upvalue object")
+                    .location = UpvalueLocation::Closed(value);
+            }
+        }
+    }
+
+    fn frame_closure(&self, frame_index: usize) -> Handle {
+        match self.frames[frame_index].function {
+            FrameFunction::Closure(closure) => closure,
+            FrameFunction::Script => panic!("script frame has no closure"),
+        }
+    }
+
+    fn frame_upvalue(&self, heap: &Heap, frame_index: usize, slot: u8) -> Handle {
+        let closure = self.frame_closure(frame_index);
+        heap.as_closure(closure)
+            .expect("call frame points at a non-closure object")
+            .upvalues[usize::from(slot)]
+    }
+
+    fn capture_upvalue(&mut self, slot: usize, heap: &mut Heap) -> Handle {
+        if let Some(existing) = self.open_upvalues.iter().copied().find(|handle| {
+            heap.as_upvalue(*handle)
+                .is_some_and(|upvalue| upvalue.location == UpvalueLocation::Open(slot))
+        }) {
+            return existing;
+        }
+
+        let handle = heap.alloc_upvalue(Upvalue::open(slot));
+        self.open_upvalues.push(handle);
+        self.open_upvalues.sort_by_key(|handle| {
+            std::cmp::Reverse(
+                match heap.as_upvalue(*handle).map(|upvalue| upvalue.location) {
+                    Some(UpvalueLocation::Open(slot)) => slot,
+                    Some(UpvalueLocation::Closed(_)) | None => 0,
+                },
+            )
+        });
+        handle
+    }
+
+    fn close_upvalues(&mut self, first_slot: usize, heap: &mut Heap) {
+        let mut index = 0;
+        while index < self.open_upvalues.len() {
+            let handle = self.open_upvalues[index];
+            let should_close = matches!(
+                heap.as_upvalue(handle)
+                    .expect("open upvalue list references a non-upvalue object")
+                    .location,
+                UpvalueLocation::Open(slot) if slot >= first_slot
+            );
+
+            if should_close {
+                let UpvalueLocation::Open(slot) = heap
+                    .as_upvalue(handle)
+                    .expect("open upvalue list references a non-upvalue object")
+                    .location
+                else {
+                    unreachable!("should_close ensures the upvalue is open");
+                };
+                heap.as_upvalue_mut(handle)
+                    .expect("open upvalue list references a non-upvalue object")
+                    .location = UpvalueLocation::Closed(self.stack[slot]);
+                self.open_upvalues.remove(index);
+            } else {
+                index += 1;
+            }
+        }
     }
 
     fn get_global(
@@ -337,7 +472,7 @@ impl Vm {
         Ok(())
     }
 
-    fn return_from_frame(&mut self, frame_index: usize) -> Step {
+    fn return_from_frame(&mut self, frame_index: usize, heap: &mut Heap) -> Step {
         if self.frames[frame_index].function == FrameFunction::Script {
             self.frames.clear();
             return Step::Done;
@@ -345,6 +480,7 @@ impl Vm {
 
         let result = self.pop();
         let slot_start = self.frames[frame_index].slot_start;
+        self.close_upvalues(slot_start, heap);
         self.frames.pop();
         self.stack.truncate(slot_start);
         self.push(result);
@@ -359,10 +495,13 @@ impl Vm {
     ) -> &'a Chunk {
         match self.frames[frame_index].function {
             FrameFunction::Script => script_chunk,
-            FrameFunction::Function(handle) => {
+            FrameFunction::Closure(handle) => {
+                let closure = heap
+                    .as_closure(handle)
+                    .expect("call frame points at a non-closure object");
                 &heap
-                    .as_function(handle)
-                    .expect("call frame points at a non-function object")
+                    .as_function(closure.function)
+                    .expect("closure references a non-function object")
                     .chunk
             }
         }
@@ -442,12 +581,15 @@ impl Vm {
         };
 
         match heap.get(handle) {
-            Obj::Function(function) => {
+            Obj::Closure(closure) => {
+                let function = heap
+                    .as_function(closure.function)
+                    .expect("closure references a non-function object");
                 if arg_count != function.arity {
                     return Err(Self::arity_error(line, function.arity, arg_count));
                 }
                 self.frames.push(CallFrame {
-                    function: FrameFunction::Function(handle),
+                    function: FrameFunction::Closure(handle),
                     ip: 0,
                     slot_start: self.stack.len() - usize::from(arg_count) - 1,
                 });
@@ -463,7 +605,7 @@ impl Vm {
                 self.push(result);
                 Ok(())
             }
-            Obj::Str(_) => Err(Self::runtime_error_at(
+            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) => Err(Self::runtime_error_at(
                 line,
                 "Can only call functions and classes.",
             )),
@@ -567,16 +709,22 @@ fn clock_native(_args: &[Value]) -> Value {
 ///           [ 1.2 ][ 3.4 ]
 /// 0000  123 OP_ADD
 /// ```
-fn trace_step(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn FmtWrite) {
+fn trace_step(chunk: &Chunk, ip: usize, heap: &Heap, stack: &[Value], out: &mut dyn FmtWrite) {
     // The trace's stack rendering uses the bare Display (not the
     // heap-aware adapter), so any object handle prints as `<obj#N>`.
     // The book's chapter-15 trace tests still pass because they only
     // exercise numeric values; heap-aware output is tested through the
     // public execution surfaces.
-    let _ = trace_inner(chunk, ip, stack, out);
+    let _ = trace_inner(chunk, ip, heap, stack, out);
 }
 
-fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn FmtWrite) -> fmt::Result {
+fn trace_inner(
+    chunk: &Chunk,
+    ip: usize,
+    heap: &Heap,
+    stack: &[Value],
+    out: &mut dyn FmtWrite,
+) -> fmt::Result {
     // 10 spaces to align with the `0000` offset column under the
     // following disassembled instruction.
     write!(out, "          ")?;
@@ -584,7 +732,7 @@ fn trace_inner(chunk: &Chunk, ip: usize, stack: &[Value], out: &mut dyn FmtWrite
         write!(out, "[ {v} ]")?;
     }
     writeln!(out)?;
-    disassemble_instruction(chunk, ip, out)?;
+    disassemble_instruction_with_heap(chunk, ip, Some(heap), out)?;
     Ok(())
 }
 
