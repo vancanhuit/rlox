@@ -9,8 +9,8 @@
 //! Reference: clox `vm.h` / `vm.c`. Differences from clox:
 //!
 //! - The stack is a `Vec<Value>` rather than a fixed-size `Value[256]`.
-//!   Lox itself imposes no statically-known upper bound (recursion +
-//!   nested function calls land in chapter 24+), so a growable stack is
+//!   Lox itself imposes no statically-known upper bound now that
+//!   recursion and nested function calls exist, so a growable stack is
 //!   simpler and still cheap.
 //! - The instruction pointer is a `usize` index into `chunk.code`
 //!   instead of a raw `*const u8`. The borrow checker objects to the
@@ -28,10 +28,11 @@
 use std::collections::HashMap;
 use std::fmt::{self, Write as FmtWrite};
 use std::io::Write as IoWrite;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction;
-use crate::heap::{Heap, Obj};
+use crate::heap::{Handle, Heap, NativeFunction, Obj};
 use crate::value::{Value, values_equal};
 
 /// A runtime error surfaced by the VM.
@@ -67,10 +68,9 @@ pub type VmResult<T = Value> = Result<T, VmError>;
 /// The bytecode interpreter.
 ///
 /// One [`Vm`] can execute many [`Chunk`]s back-to-back; the stack is
-/// drained between programs by [`OpCode::Return`]. Chapter 21 adds a
-/// persistent globals table to the VM; callers that reuse a VM must
-/// also reuse the same [`Heap`] because global values may contain object
-/// handles into that heap.
+/// cleared between programs. Callers that reuse a VM must also reuse
+/// the same [`Heap`] because global values may contain object handles
+/// into that heap.
 #[derive(Debug, Default)]
 pub struct Vm {
     /// Operand stack. Drained on `OP_RETURN`.
@@ -79,6 +79,29 @@ pub struct Vm {
     /// uses Rust's standard hash table instead of clox's custom chapter
     /// 20 table.
     globals: HashMap<String, Value>,
+    /// Active call frames. A script frame borrows the chunk passed to
+    /// `interpret`; function frames point at heap-allocated function
+    /// objects.
+    frames: Vec<CallFrame>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FrameFunction {
+    Script,
+    Function(Handle),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CallFrame {
+    function: FrameFunction,
+    ip: usize,
+    slot_start: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Continue,
+    Done,
 }
 
 impl Vm {
@@ -135,118 +158,125 @@ impl Vm {
         out: &mut dyn IoWrite,
         mut trace: Option<&mut W>,
     ) -> VmResult<()> {
+        self.ensure_natives(heap);
+
         // Reset the stack between programs so a `Vm` can be reused. We
         // reuse the allocation rather than reallocating.
         self.stack.clear();
+        self.frames.clear();
+        self.frames.push(CallFrame {
+            function: FrameFunction::Script,
+            ip: 0,
+            slot_start: 0,
+        });
 
-        let mut ip: usize = 0;
         loop {
+            let frame_index = self
+                .frames
+                .len()
+                .checked_sub(1)
+                .expect("VM must always have an active call frame");
             if let Some(out) = trace.as_deref_mut() {
-                trace_step(chunk, ip, &self.stack, out);
+                let ip = self.frames[frame_index].ip;
+                let frame_chunk = self.frame_chunk(chunk, heap, frame_index);
+                trace_step(frame_chunk, ip, &self.stack, out);
             }
 
             // The opcode lives at `op_ip`; chapter 18 introduces runtime
             // errors which need to attribute themselves to the *opcode's*
             // source line, not the operand byte that follows.
-            let op_ip = ip;
-            let byte = chunk.code[op_ip];
+            let op_ip = self.frames[frame_index].ip;
+            let line = self.frame_line(chunk, heap, frame_index, op_ip);
+            let byte = self.read_byte(chunk, heap, frame_index);
             let op = OpCode::from_byte(byte)
                 .unwrap_or_else(|| panic!("unknown opcode {byte:#04x} at offset {op_ip} in chunk"));
-            ip = op_ip + 1;
 
-            match op {
-                OpCode::Constant => {
-                    let idx = chunk.code[ip] as usize;
-                    ip += 1;
-                    let value = chunk.constants[idx];
-                    self.push(value);
-                }
-                OpCode::Pop => {
-                    self.pop();
-                }
-                OpCode::Print => {
-                    let value = self.pop();
-                    writeln!(out, "{}", value.display(heap))
-                        .map_err(|e| Self::runtime_error(chunk, op_ip, &e.to_string()))?;
-                }
-                OpCode::DefineGlobal => {
-                    let name = Self::read_string_constant(chunk, heap, ip);
-                    ip += 1;
-                    self.globals.insert(name, self.peek(0));
-                    self.pop();
-                }
-                OpCode::GetGlobal => {
-                    let name = Self::read_string_constant(chunk, heap, ip);
-                    ip += 1;
-                    let Some(value) = self.globals.get(&name).copied() else {
-                        return Err(Self::runtime_error(
-                            chunk,
-                            op_ip,
-                            &format!("Undefined variable '{name}'."),
-                        ));
-                    };
-                    self.push(value);
-                }
-                OpCode::SetGlobal => {
-                    let name = Self::read_string_constant(chunk, heap, ip);
-                    ip += 1;
-                    if !self.globals.contains_key(&name) {
-                        return Err(Self::runtime_error(
-                            chunk,
-                            op_ip,
-                            &format!("Undefined variable '{name}'."),
-                        ));
-                    }
-                    self.globals.insert(name, self.peek(0));
-                }
-                OpCode::GetLocal => {
-                    let slot = chunk.code[ip] as usize;
-                    ip += 1;
-                    self.push(self.stack[slot]);
-                }
-                OpCode::SetLocal => {
-                    let slot = chunk.code[ip] as usize;
-                    ip += 1;
-                    self.stack[slot] = self.peek(0);
-                }
-                OpCode::Jump => ip = Self::jump_forward(chunk, ip),
-                OpCode::JumpIfFalse => ip = self.jump_if_false(chunk, ip),
-                OpCode::Loop => ip = Self::jump_backward(chunk, ip),
-                OpCode::Nil => self.push(Value::Nil),
-                OpCode::True => self.push(Value::Bool(true)),
-                OpCode::False => self.push(Value::Bool(false)),
-                OpCode::Not => {
-                    let v = self.pop();
-                    self.push(Value::Bool(!v.is_truthy()));
-                }
-                OpCode::Equal => {
-                    // Polymorphic equality: mixed types compare unequal
-                    // rather than raising. The helper dereferences
-                    // object handles through the heap so two distinct
-                    // allocations of the same string compare equal.
-                    let b = self.pop();
-                    let a = self.pop();
-                    self.push(Value::Bool(values_equal(a, b, heap)));
-                }
-                OpCode::Greater => self.binary_cmp(chunk, op_ip, |a, b| a > b)?,
-                OpCode::Less => self.binary_cmp(chunk, op_ip, |a, b| a < b)?,
-                OpCode::Negate => {
-                    let Value::Number(n) = self.pop() else {
-                        return Err(Self::runtime_error(
-                            chunk,
-                            op_ip,
-                            "Operand must be a number.",
-                        ));
-                    };
-                    self.push(Value::Number(-n));
-                }
-                OpCode::Add => self.op_add(chunk, op_ip, heap)?,
-                OpCode::Subtract => self.binary_arith(chunk, op_ip, |a, b| a - b)?,
-                OpCode::Multiply => self.binary_arith(chunk, op_ip, |a, b| a * b)?,
-                OpCode::Divide => self.binary_arith(chunk, op_ip, |a, b| a / b)?,
-                OpCode::Return => return Ok(()),
+            if self.execute_op(op, chunk, heap, out, frame_index, line)? == Step::Done {
+                return Ok(());
             }
         }
+    }
+
+    fn execute_op(
+        &mut self,
+        op: OpCode,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        out: &mut dyn IoWrite,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<Step> {
+        match op {
+            OpCode::Constant => {
+                let value = self.read_constant(chunk, heap, frame_index);
+                self.push(value);
+            }
+            OpCode::Pop => {
+                self.pop();
+            }
+            OpCode::Print => {
+                let value = self.pop();
+                writeln!(out, "{}", value.display(heap))
+                    .map_err(|e| Self::runtime_error_at(line, &e.to_string()))?;
+            }
+            OpCode::DefineGlobal => {
+                let name = self.read_string_constant(chunk, heap, frame_index);
+                self.globals.insert(name, self.peek(0));
+                self.pop();
+            }
+            OpCode::GetGlobal => self.get_global(chunk, heap, frame_index, line)?,
+            OpCode::SetGlobal => self.set_global(chunk, heap, frame_index, line)?,
+            OpCode::GetLocal => {
+                let slot = usize::from(self.read_byte(chunk, heap, frame_index));
+                let absolute = self.frames[frame_index].slot_start + slot;
+                self.push(self.stack[absolute]);
+            }
+            OpCode::SetLocal => {
+                let slot = usize::from(self.read_byte(chunk, heap, frame_index));
+                let absolute = self.frames[frame_index].slot_start + slot;
+                self.stack[absolute] = self.peek(0);
+            }
+            OpCode::Jump => {
+                let jump = usize::from(self.read_short(chunk, heap, frame_index));
+                self.frames[frame_index].ip += jump;
+            }
+            OpCode::JumpIfFalse => {
+                let jump = usize::from(self.read_short(chunk, heap, frame_index));
+                if !self.peek(0).is_truthy() {
+                    self.frames[frame_index].ip += jump;
+                }
+            }
+            OpCode::Loop => {
+                let jump = usize::from(self.read_short(chunk, heap, frame_index));
+                self.frames[frame_index].ip -= jump;
+            }
+            OpCode::Call => {
+                let arg_count = self.read_byte(chunk, heap, frame_index);
+                let callee = self.peek(usize::from(arg_count));
+                self.call_value(callee, arg_count, heap, line)?;
+            }
+            OpCode::Nil => self.push(Value::Nil),
+            OpCode::True => self.push(Value::Bool(true)),
+            OpCode::False => self.push(Value::Bool(false)),
+            OpCode::Not => {
+                let v = self.pop();
+                self.push(Value::Bool(!v.is_truthy()));
+            }
+            OpCode::Equal => {
+                let b = self.pop();
+                let a = self.pop();
+                self.push(Value::Bool(values_equal(a, b, heap)));
+            }
+            OpCode::Greater => self.binary_cmp(line, |a, b| a > b)?,
+            OpCode::Less => self.binary_cmp(line, |a, b| a < b)?,
+            OpCode::Negate => self.negate(line)?,
+            OpCode::Add => self.op_add(line, heap)?,
+            OpCode::Subtract => self.binary_arith(line, |a, b| a - b)?,
+            OpCode::Multiply => self.binary_arith(line, |a, b| a * b)?,
+            OpCode::Divide => self.binary_arith(line, |a, b| a / b)?,
+            OpCode::Return => return Ok(self.return_from_frame(frame_index)),
+        }
+        Ok(Step::Continue)
     }
 
     fn push(&mut self, v: Value) {
@@ -263,42 +293,195 @@ impl Vm {
         self.stack[self.stack.len() - 1 - distance]
     }
 
-    fn read_string_constant(chunk: &Chunk, heap: &Heap, operand_ip: usize) -> String {
-        let idx = chunk.code[operand_ip] as usize;
-        let Value::Obj(handle) = chunk.constants[idx] else {
-            panic!("global name operand {idx} does not reference a string object");
+    fn get_global(
+        &mut self,
+        chunk: &Chunk,
+        heap: &Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let Some(value) = self.globals.get(&name).copied() else {
+            return Err(Self::runtime_error_at(
+                line,
+                &format!("Undefined variable '{name}'."),
+            ));
+        };
+        self.push(value);
+        Ok(())
+    }
+
+    fn set_global(
+        &mut self,
+        chunk: &Chunk,
+        heap: &Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        if !self.globals.contains_key(&name) {
+            return Err(Self::runtime_error_at(
+                line,
+                &format!("Undefined variable '{name}'."),
+            ));
+        }
+        self.globals.insert(name, self.peek(0));
+        Ok(())
+    }
+
+    fn negate(&mut self, line: usize) -> VmResult<()> {
+        let Value::Number(n) = self.pop() else {
+            return Err(Self::runtime_error_at(line, "Operand must be a number."));
+        };
+        self.push(Value::Number(-n));
+        Ok(())
+    }
+
+    fn return_from_frame(&mut self, frame_index: usize) -> Step {
+        if self.frames[frame_index].function == FrameFunction::Script {
+            self.frames.clear();
+            return Step::Done;
+        }
+
+        let result = self.pop();
+        let slot_start = self.frames[frame_index].slot_start;
+        self.frames.pop();
+        self.stack.truncate(slot_start);
+        self.push(result);
+        Step::Continue
+    }
+
+    fn frame_chunk<'a>(
+        &self,
+        script_chunk: &'a Chunk,
+        heap: &'a Heap,
+        frame_index: usize,
+    ) -> &'a Chunk {
+        match self.frames[frame_index].function {
+            FrameFunction::Script => script_chunk,
+            FrameFunction::Function(handle) => {
+                &heap
+                    .as_function(handle)
+                    .expect("call frame points at a non-function object")
+                    .chunk
+            }
+        }
+    }
+
+    fn frame_line(
+        &self,
+        script_chunk: &Chunk,
+        heap: &Heap,
+        frame_index: usize,
+        op_ip: usize,
+    ) -> usize {
+        self.frame_chunk(script_chunk, heap, frame_index)
+            .lines
+            .line_at(op_ip)
+            .unwrap_or(0)
+    }
+
+    fn read_byte(&mut self, script_chunk: &Chunk, heap: &Heap, frame_index: usize) -> u8 {
+        let ip = self.frames[frame_index].ip;
+        let byte = self.frame_chunk(script_chunk, heap, frame_index).code[ip];
+        self.frames[frame_index].ip = ip + 1;
+        byte
+    }
+
+    fn read_constant(&mut self, script_chunk: &Chunk, heap: &Heap, frame_index: usize) -> Value {
+        let idx = usize::from(self.read_byte(script_chunk, heap, frame_index));
+        self.frame_chunk(script_chunk, heap, frame_index).constants[idx]
+    }
+
+    fn read_string_constant(
+        &mut self,
+        script_chunk: &Chunk,
+        heap: &Heap,
+        frame_index: usize,
+    ) -> String {
+        let value = self.read_constant(script_chunk, heap, frame_index);
+        let Value::Obj(handle) = value else {
+            panic!("global name operand does not reference a string object");
         };
         heap.as_str(handle)
             .expect("global name operand references non-string object")
             .to_owned()
     }
 
-    fn read_short(chunk: &Chunk, operand_ip: usize) -> u16 {
-        (u16::from(chunk.code[operand_ip]) << 8) | u16::from(chunk.code[operand_ip + 1])
+    fn read_short(&mut self, script_chunk: &Chunk, heap: &Heap, frame_index: usize) -> u16 {
+        let high = u16::from(self.read_byte(script_chunk, heap, frame_index));
+        let low = u16::from(self.read_byte(script_chunk, heap, frame_index));
+        (high << 8) | low
     }
 
-    fn jump_forward(chunk: &Chunk, operand_ip: usize) -> usize {
-        operand_ip + 2 + usize::from(Self::read_short(chunk, operand_ip))
+    fn ensure_natives(&mut self, heap: &mut Heap) {
+        if self.globals.contains_key("clock") {
+            return;
+        }
+
+        let handle = heap.alloc_native(NativeFunction {
+            name: "clock",
+            arity: 0,
+            function: clock_native,
+        });
+        self.globals.insert("clock".to_string(), Value::Obj(handle));
     }
 
-    fn jump_if_false(&self, chunk: &Chunk, operand_ip: usize) -> usize {
-        let next_ip = operand_ip + 2;
-        if self.peek(0).is_truthy() {
-            next_ip
-        } else {
-            next_ip + usize::from(Self::read_short(chunk, operand_ip))
+    fn call_value(
+        &mut self,
+        callee: Value,
+        arg_count: u8,
+        heap: &mut Heap,
+        line: usize,
+    ) -> VmResult<()> {
+        let Value::Obj(handle) = callee else {
+            return Err(Self::runtime_error_at(
+                line,
+                "Can only call functions and classes.",
+            ));
+        };
+
+        match heap.get(handle) {
+            Obj::Function(function) => {
+                if arg_count != function.arity {
+                    return Err(Self::arity_error(line, function.arity, arg_count));
+                }
+                self.frames.push(CallFrame {
+                    function: FrameFunction::Function(handle),
+                    ip: 0,
+                    slot_start: self.stack.len() - usize::from(arg_count) - 1,
+                });
+                Ok(())
+            }
+            Obj::Native(native) => {
+                if arg_count != native.arity {
+                    return Err(Self::arity_error(line, native.arity, arg_count));
+                }
+                let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+                let result = (native.function)(&self.stack[callee_index + 1..]);
+                self.stack.truncate(callee_index);
+                self.push(result);
+                Ok(())
+            }
+            Obj::Str(_) => Err(Self::runtime_error_at(
+                line,
+                "Can only call functions and classes.",
+            )),
         }
     }
 
-    fn jump_backward(chunk: &Chunk, operand_ip: usize) -> usize {
-        operand_ip + 2 - usize::from(Self::read_short(chunk, operand_ip))
+    fn arity_error(line: usize, expected: u8, actual: u8) -> VmError {
+        Self::runtime_error_at(
+            line,
+            &format!("Expected {expected} arguments but got {actual}."),
+        )
     }
 
     /// Chapter 19 `OP_ADD`: dispatches on the operand types so the
     /// same opcode covers `1 + 2` (numeric addition) and `"a" + "b"`
     /// (string concatenation). Anything else is a runtime error
     /// matching clox: `Operands must be two numbers or two strings.`
-    fn op_add(&mut self, chunk: &Chunk, op_ip: usize, heap: &mut Heap) -> VmResult<()> {
+    fn op_add(&mut self, line: usize, heap: &mut Heap) -> VmResult<()> {
         let b = self.pop();
         let a = self.pop();
         match (a, b) {
@@ -307,24 +490,30 @@ impl Vm {
                 Ok(())
             }
             (Value::Obj(ah), Value::Obj(bh)) => {
-                // Both must currently be strings — chapter 19's only
-                // object kind. Other object kinds (functions, classes)
-                // do not concatenate, so a future kind-mismatch falls
-                // through to the same `must be two strings` error.
-                match (heap.get(ah), heap.get(bh)) {
+                // Only strings concatenate. Functions and native
+                // functions fall through to the same operand-type error
+                // clox uses for mixed string/non-string pairs.
+                let concat = match (heap.get(ah), heap.get(bh)) {
                     (Obj::Str(a), Obj::Str(b)) => {
                         let mut concat = String::with_capacity(a.len() + b.len());
                         concat.push_str(a);
                         concat.push_str(b);
-                        let h = heap.alloc_string(concat);
-                        self.push(Value::Obj(h));
-                        Ok(())
+                        Some(concat)
                     }
-                }
+                    _ => None,
+                };
+                let Some(concat) = concat else {
+                    return Err(Self::runtime_error_at(
+                        line,
+                        "Operands must be two numbers or two strings.",
+                    ));
+                };
+                let h = heap.alloc_string(concat);
+                self.push(Value::Obj(h));
+                Ok(())
             }
-            _ => Err(Self::runtime_error(
-                chunk,
-                op_ip,
+            _ => Err(Self::runtime_error_at(
+                line,
                 "Operands must be two numbers or two strings.",
             )),
         }
@@ -333,56 +522,42 @@ impl Vm {
     /// Binary numeric arithmetic (`-`, `*`, `/`) that returns a number.
     /// `+` has its own helper because chapter 19 overloads it for
     /// strings.
-    fn binary_arith<F: Fn(f64, f64) -> f64>(
-        &mut self,
-        chunk: &Chunk,
-        op_ip: usize,
-        op: F,
-    ) -> VmResult<()> {
+    fn binary_arith<F: Fn(f64, f64) -> f64>(&mut self, line: usize, op: F) -> VmResult<()> {
         // `b` is popped first because it was pushed last (right-hand operand).
         let b = self.pop();
         let a = self.pop();
         let (Value::Number(a), Value::Number(b)) = (a, b) else {
-            return Err(Self::runtime_error(
-                chunk,
-                op_ip,
-                "Operands must be numbers.",
-            ));
+            return Err(Self::runtime_error_at(line, "Operands must be numbers."));
         };
         self.push(Value::Number(op(a, b)));
         Ok(())
     }
 
     /// Binary numeric comparison that returns a boolean.
-    fn binary_cmp<F: Fn(f64, f64) -> bool>(
-        &mut self,
-        chunk: &Chunk,
-        op_ip: usize,
-        op: F,
-    ) -> VmResult<()> {
+    fn binary_cmp<F: Fn(f64, f64) -> bool>(&mut self, line: usize, op: F) -> VmResult<()> {
         let b = self.pop();
         let a = self.pop();
         let (Value::Number(a), Value::Number(b)) = (a, b) else {
-            return Err(Self::runtime_error(
-                chunk,
-                op_ip,
-                "Operands must be numbers.",
-            ));
+            return Err(Self::runtime_error_at(line, "Operands must be numbers."));
         };
         self.push(Value::Bool(op(a, b)));
         Ok(())
     }
 
-    /// Build a runtime error attributed to the source line of the
-    /// instruction at `op_ip`. Associated function (no `self`) because
-    /// it doesn't read the operand stack and clippy prefers it that way.
-    fn runtime_error(chunk: &Chunk, op_ip: usize, message: &str) -> VmError {
-        let line = chunk.lines.line_at(op_ip).unwrap_or(0);
+    /// Build a runtime error attributed to `line`.
+    fn runtime_error_at(line: usize, message: &str) -> VmError {
         VmError::Runtime {
             line,
             message: message.to_string(),
         }
     }
+}
+
+fn clock_native(_args: &[Value]) -> Value {
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0.0, |duration| duration.as_secs_f64());
+    Value::Number(seconds)
 }
 
 /// Format a single trace step into `out`, mimicking clox's
