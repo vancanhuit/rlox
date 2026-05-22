@@ -1,4 +1,4 @@
-//! Chapter 23 — Jumping Back and Forth.
+//! Chapter 24 — Calls and Functions.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -11,7 +11,8 @@
 //! including `print`, expression statements, global `var` declarations,
 //! global reads, and global assignment. Chapter 22 adds lexical block
 //! scopes and stack-slot locals. Chapter 23 compiles structured
-//! control flow to raw forward and backward jumps.
+//! control flow to raw forward and backward jumps. Chapter 24 adds
+//! first-class functions, calls, `return`, and native functions.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -27,7 +28,7 @@ use rlox_shared::scanner::Scanner;
 use rlox_shared::token::{Literal, Token, TokenType};
 
 use crate::chunk::{Chunk, OpCode};
-use crate::heap::Heap;
+use crate::heap::{Function, Heap};
 use crate::value::Value;
 
 /// Compile `source` into a [`Chunk`] terminated with [`OpCode::Return`].
@@ -59,8 +60,6 @@ pub fn compile(source: &str, heap: &mut Heap) -> Result<Chunk, Vec<LoxError>> {
 /// matters: `parse_precedence(p)` continues while the *next* token's
 /// infix precedence is `>= p`.
 ///
-/// Slots reserved for later chapters (`Call`/`Primary`) are kept
-/// commented out so the ordering remains stable as we light them up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 enum Precedence {
@@ -73,6 +72,7 @@ enum Precedence {
     Term = 6,       // + -
     Factor = 7,     // * /
     Unary = 8,      // ! -
+    Call = 9,       // . ()
 }
 
 impl Precedence {
@@ -88,8 +88,8 @@ impl Precedence {
             Self::Equality => Self::Comparison,
             Self::Comparison => Self::Term,
             Self::Term => Self::Factor,
-            // Nothing in chapter 18 is higher than Unary, so saturate.
-            Self::Factor | Self::Unary => Self::Unary,
+            Self::Factor => Self::Unary,
+            Self::Unary | Self::Call => Self::Call,
         }
     }
 }
@@ -113,6 +113,8 @@ enum ParseFn {
     String,
     /// Parses a local/global variable read or assignment.
     Variable,
+    /// Parses a function call argument list.
+    Call,
     /// Parses short-circuiting logical `and`.
     And,
     /// Parses short-circuiting logical `or`.
@@ -134,13 +136,53 @@ struct Local {
     depth: Option<usize>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FunctionType {
+    Script,
+    Function,
+}
+
+#[derive(Debug)]
+struct CompileState {
+    chunk: Chunk,
+    locals: Vec<Local>,
+    scope_depth: usize,
+    function_type: FunctionType,
+    function_arity: u8,
+}
+
+impl CompileState {
+    fn script() -> Self {
+        Self {
+            chunk: Chunk::new(),
+            locals: Vec::new(),
+            scope_depth: 0,
+            function_type: FunctionType::Script,
+            function_arity: 0,
+        }
+    }
+
+    fn function(name: &Token) -> Self {
+        Self {
+            chunk: Chunk::new(),
+            locals: vec![Local {
+                name: Token::new(TokenType::Identifier, "", None, name.line),
+                depth: Some(0),
+            }],
+            scope_depth: 0,
+            function_type: FunctionType::Function,
+            function_arity: 0,
+        }
+    }
+}
+
 /// Pratt rule lookup. Mirrors clox's static `rules[]` array.
 const fn rule_for(t: TokenType) -> ParseRule {
     match t {
         TokenType::LeftParen => ParseRule {
             prefix: ParseFn::Grouping,
-            infix: ParseFn::None,
-            precedence: Precedence::None,
+            infix: ParseFn::Call,
+            precedence: Precedence::Call,
         },
         TokenType::Minus => ParseRule {
             prefix: ParseFn::Unary,
@@ -236,6 +278,11 @@ struct Compiler<'src, 'heap> {
     /// Current lexical block depth. Top-level globals live at depth 0
     /// and are not tracked in `locals`.
     scope_depth: usize,
+    /// Whether the current compilation target is top-level script code
+    /// or a user-declared function body.
+    function_type: FunctionType,
+    /// Number of parameters in the current function target.
+    function_arity: u8,
     errors: Vec<LoxError>,
     /// While in panic mode, errors are discarded until we synchronise.
     panic_mode: bool,
@@ -243,14 +290,17 @@ struct Compiler<'src, 'heap> {
 
 impl<'src, 'heap> Compiler<'src, 'heap> {
     fn new(source: &'src str, heap: &'heap mut Heap) -> Self {
+        let state = CompileState::script();
         Self {
             scanner: Scanner::new(source),
             previous: None,
             current: None,
-            chunk: Chunk::new(),
+            chunk: state.chunk,
             heap,
-            locals: Vec::new(),
-            scope_depth: 0,
+            locals: state.locals,
+            scope_depth: state.scope_depth,
+            function_type: state.function_type,
+            function_arity: state.function_arity,
             errors: Vec::new(),
             panic_mode: false,
         }
@@ -320,6 +370,26 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
 
     // ---- emit -----------------------------------------------------------
 
+    fn take_state(&mut self) -> CompileState {
+        CompileState {
+            chunk: std::mem::take(&mut self.chunk),
+            locals: std::mem::take(&mut self.locals),
+            scope_depth: self.scope_depth,
+            function_type: self.function_type,
+            function_arity: self.function_arity,
+        }
+    }
+
+    fn replace_state(&mut self, state: CompileState) -> CompileState {
+        let old = self.take_state();
+        self.chunk = state.chunk;
+        self.locals = state.locals;
+        self.scope_depth = state.scope_depth;
+        self.function_type = state.function_type;
+        self.function_arity = state.function_arity;
+        old
+    }
+
     fn emit_op(&mut self, op: OpCode) {
         let line = self.previous_or_current_line();
         self.chunk.write_op(op, line);
@@ -343,6 +413,11 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     fn emit_op_with_byte(&mut self, op: OpCode, byte: u8) {
         self.emit_op(op);
         self.emit_byte(byte);
+    }
+
+    fn emit_return(&mut self) {
+        self.emit_op(OpCode::Nil);
+        self.emit_op(OpCode::Return);
     }
 
     fn emit_jump(&mut self, op: OpCode) -> usize {
@@ -434,6 +509,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             ParseFn::Literal => self.literal(),
             ParseFn::String => self.string(),
             ParseFn::Variable => self.variable(can_assign),
+            ParseFn::Call => self.call(),
             ParseFn::And => self.and(),
             ParseFn::Or => self.or(),
         }
@@ -442,7 +518,9 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     // ---- grammar productions --------------------------------------------
 
     fn declaration(&mut self) {
-        if self.match_token(TokenType::Var) {
+        if self.match_token(TokenType::Fun) {
+            self.fun_declaration();
+        } else if self.match_token(TokenType::Var) {
             self.var_declaration();
         } else {
             self.statement();
@@ -460,6 +538,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             self.if_statement();
         } else if self.match_token(TokenType::Print) {
             self.print_statement();
+        } else if self.match_token(TokenType::Return) {
+            self.return_statement();
         } else if self.match_token(TokenType::While) {
             self.while_statement();
         } else if self.match_token(TokenType::LeftBrace) {
@@ -469,6 +549,49 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         } else {
             self.expression_statement();
         }
+    }
+
+    fn fun_declaration(&mut self) {
+        let global = self.parse_variable("Expect function name.");
+        let name = self.previous_token().clone();
+        self.mark_initialized();
+        self.function(&name);
+        self.define_variable(global);
+    }
+
+    fn function(&mut self, name: &Token) {
+        let outer = self.replace_state(CompileState::function(name));
+        self.begin_scope();
+
+        self.consume(TokenType::LeftParen, "Expect '(' after function name.");
+        if !self.check(TokenType::RightParen) {
+            loop {
+                if self.function_arity == u8::MAX {
+                    self.error_at_current("Can't have more than 255 parameters.");
+                } else {
+                    self.function_arity += 1;
+                }
+                let param = self.parse_variable("Expect parameter name.");
+                self.define_variable(param);
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "Expect ')' after parameters.");
+        self.consume(TokenType::LeftBrace, "Expect '{' before function body.");
+        self.block();
+        self.emit_return();
+
+        let arity = self.function_arity;
+        let chunk = std::mem::take(&mut self.chunk);
+        self.replace_state(outer);
+
+        let handle =
+            self.heap
+                .alloc_function(Function::new(Some(name.lexeme.clone()), arity, chunk));
+        self.emit_constant(Value::Obj(handle));
     }
 
     fn for_statement(&mut self) {
@@ -567,6 +690,20 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         self.expression();
         self.consume(TokenType::Semicolon, "Expect ';' after expression.");
         self.emit_op(OpCode::Pop);
+    }
+
+    fn return_statement(&mut self) {
+        if self.function_type == FunctionType::Script {
+            self.error_at_previous("Can't return from top-level code.");
+        }
+
+        if self.match_token(TokenType::Semicolon) {
+            self.emit_op(OpCode::Nil);
+        } else {
+            self.expression();
+            self.consume(TokenType::Semicolon, "Expect ';' after return value.");
+        }
+        self.emit_op(OpCode::Return);
     }
 
     fn var_declaration(&mut self) {
@@ -749,6 +886,30 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         } else {
             self.emit_op_with_byte(get_op, arg);
         }
+    }
+
+    fn call(&mut self) {
+        let arg_count = self.argument_list();
+        self.emit_op_with_byte(OpCode::Call, arg_count);
+    }
+
+    fn argument_list(&mut self) -> u8 {
+        let mut count = 0_u8;
+        if !self.check(TokenType::RightParen) {
+            loop {
+                if count == u8::MAX {
+                    self.error_at_current("Can't have more than 255 arguments.");
+                }
+                self.expression();
+                count = count.saturating_add(1);
+
+                if !self.match_token(TokenType::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenType::RightParen, "Expect ')' after arguments.");
+        count
     }
 
     fn grouping(&mut self) {
@@ -1093,7 +1254,9 @@ mod tests {
         let mut out = Vec::new();
         vm.interpret(&chunk, &mut heap, &mut out).expect("runs");
         assert_eq!(String::from_utf8(out).unwrap(), "ab\n");
-        assert_eq!(heap.len(), pre_objs + 1);
+        // Runtime installs the chapter-24 `clock` native, then
+        // concatenation allocates its result string.
+        assert_eq!(heap.len(), pre_objs + 2);
     }
 
     #[test]
@@ -1411,5 +1574,124 @@ mod tests {
         assert!(chunk.code.contains(&(OpCode::Jump as u8)));
         assert!(chunk.code.contains(&(OpCode::JumpIfFalse as u8)));
         assert!(chunk.code.contains(&(OpCode::Loop as u8)));
+    }
+
+    #[test]
+    fn function_declaration_and_call_execute_body() {
+        let src = r#"
+            fun sayHi() {
+                print "hi";
+            }
+            sayHi();
+        "#;
+        assert_eq!(run(src).0, "hi\n");
+    }
+
+    #[test]
+    fn functions_accept_parameters_and_return_values() {
+        let src = r"
+            fun add(a, b, c) {
+                return a + b + c;
+            }
+            print add(1, 2, 3);
+        ";
+        assert_eq!(run(src).0, "6\n");
+    }
+
+    #[test]
+    fn functions_without_explicit_return_return_nil() {
+        let src = r"
+            fun noop() {}
+            print noop();
+        ";
+        assert_eq!(run(src).0, "nil\n");
+    }
+
+    #[test]
+    fn recursive_functions_use_call_frames() {
+        let src = r"
+            fun fact(n) {
+                if (n <= 1) return 1;
+                return n * fact(n - 1);
+            }
+            print fact(5);
+        ";
+        assert_eq!(run(src).0, "120\n");
+    }
+
+    #[test]
+    fn function_values_display_by_name() {
+        assert_eq!(run("fun f() {} print f;").0, "<fn f>\n");
+    }
+
+    #[test]
+    fn local_functions_can_be_called_inside_their_scope() {
+        let src = r"
+            {
+                fun double(n) {
+                    return n + n;
+                }
+                print double(4);
+            }
+        ";
+        assert_eq!(run(src).0, "8\n");
+    }
+
+    #[test]
+    fn native_clock_is_available_as_a_global_function() {
+        assert_eq!(run("print clock() >= 0;").0, "true\n");
+    }
+
+    #[test]
+    fn call_arity_mismatch_is_runtime_error() {
+        let VmError::Runtime { message, line } = run_err("fun f(a, b) {} f(1);");
+        assert_eq!(message, "Expected 2 arguments but got 1.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn calling_non_callable_value_is_runtime_error() {
+        let VmError::Runtime { message, line } = run_err("1();");
+        assert_eq!(message, "Can only call functions and classes.");
+        assert_eq!(line, 1);
+    }
+
+    #[test]
+    fn return_is_not_allowed_at_top_level() {
+        let errs = compile_err("return 1;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Can't return from top-level code."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn function_declarations_require_expected_punctuation() {
+        let errs = compile_err("fun f { print 1; }");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect '(' after function name."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err("fun f(a, ) {}");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Expect parameter name."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
+    fn compiler_emits_call_opcode_for_function_calls() {
+        let (chunk, _) = compile_ok("fun f() {} f();");
+        assert!(chunk.code.contains(&(OpCode::Call as u8)));
     }
 }

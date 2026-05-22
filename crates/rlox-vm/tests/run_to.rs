@@ -145,3 +145,20 @@ fn run_to_handles_control_flow() {
     "#;
     assert_eq!(run(src).unwrap(), "6\n0\n1\n");
 }
+
+#[test]
+fn run_to_handles_functions_and_recursion() {
+    let src = r"
+        fun fib(n) {
+            if (n <= 1) return n;
+            return fib(n - 2) + fib(n - 1);
+        }
+        print fib(6);
+    ";
+    assert_eq!(run(src).unwrap(), "8\n");
+}
+
+#[test]
+fn run_to_exposes_native_clock() {
+    assert_eq!(run("print clock() >= 0;").unwrap(), "true\n");
+}

@@ -71,8 +71,8 @@ pub fn disassemble_instruction(
         Some(
             op @ (OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal),
         ) => constant_instruction(op, chunk, offset, out),
-        // Byte operand: 2 bytes, prints a raw stack slot.
-        Some(op @ (OpCode::GetLocal | OpCode::SetLocal)) => {
+        // Byte operand: 2 bytes, prints a raw stack slot or argument count.
+        Some(op @ (OpCode::GetLocal | OpCode::SetLocal | OpCode::Call)) => {
             byte_instruction(op, chunk, offset, out)
         }
         // Jump operand: 3 bytes, prints the absolute target offset.
@@ -236,6 +236,8 @@ mod tests {
         chunk.write_byte(3, 1);
         chunk.write_op(OpCode::SetLocal, 2);
         chunk.write_byte(4, 2);
+        chunk.write_op(OpCode::Call, 3);
+        chunk.write_byte(2, 3);
 
         let mut out = String::new();
         disassemble_chunk(&chunk, "locals", &mut out).unwrap();
@@ -244,6 +246,7 @@ mod tests {
 == locals ==
 0000    1 OP_GET_LOCAL        3
 0002    2 OP_SET_LOCAL        4
+0004    3 OP_CALL             2
 ";
         assert_eq!(out, expected);
     }

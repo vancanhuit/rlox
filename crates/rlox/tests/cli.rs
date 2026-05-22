@@ -99,9 +99,10 @@ fn binary_exits_70_on_runtime_error() {
 
 // ---- vm-only smoke tests ----
 //
-// Chapter 23 gives the VM top-level statements, `print`, globals,
-// block-scoped locals, and structured control flow. Later chapters will
-// broaden this to functions, closures, and classes.
+// Chapter 24 gives the VM top-level statements, globals, block-scoped
+// locals, structured control flow, first-class functions, and the
+// native `clock`. Later chapters will broaden this to closures and
+// classes.
 
 #[cfg(feature = "vm")]
 #[test]
@@ -211,4 +212,26 @@ while (j < 2) {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "6\n0\n1\n");
+}
+
+#[cfg(feature = "vm")]
+#[test]
+fn vm_binary_runs_function_program() {
+    let path = write_lox(
+        "vm_functions",
+        r"fun fact(n) {
+  if (n <= 1) return 1;
+  return n * fact(n - 1);
+}
+print fact(5);
+print clock() >= 0;",
+    );
+    let out = Command::new(rlox_bin()).arg(&path).output().unwrap();
+    fs::remove_file(&path).ok();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "120\ntrue\n");
 }

@@ -6,9 +6,7 @@
 //! - [`Value::Nil`] — the singleton nil.
 //! - [`Value::Bool`] — `true` or `false`.
 //! - [`Value::Number`] — a 64-bit IEEE-754 float.
-//!
-//! Chapter 19 (*Strings*) will add `Obj(Handle<Obj>)` once the heap
-//! arrives.
+//! - [`Value::Obj`] — a heap handle for strings and callable objects.
 //!
 //! Equality follows clox/jlox semantics:
 //!
@@ -79,6 +77,7 @@ pub fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
             }
             match (heap.get(x), heap.get(y)) {
                 (Obj::Str(a), Obj::Str(b)) => a == b,
+                _ => false,
             }
         }
         // Inline variants delegate to the derived comparator above.
@@ -118,6 +117,11 @@ impl fmt::Display for ValueDisplay<'_> {
         match self.value {
             Value::Obj(h) => match self.heap.get(h) {
                 Obj::Str(s) => f.write_str(s),
+                Obj::Function(function) => match &function.name {
+                    Some(name) => write!(f, "<fn {name}>"),
+                    None => f.write_str("<script>"),
+                },
+                Obj::Native(native) => write!(f, "<native fn {}>", native.name),
             },
             // Inline variants delegate to the bare Display impl below.
             other => write!(f, "{other}"),

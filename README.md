@@ -29,12 +29,12 @@ cargo install --path crates/rlox \
     --no-default-features --features vm              # install the VM
 ```
 
-The `vm` feature is wired end-to-end through chapter 23 — `--features vm`
+The `vm` feature is wired end-to-end through chapter 24 — `--features vm`
 executes top-level Lox programs with expression statements, `print`, global
 `var` declarations, global reads and assignment, block statements, and
 block-scoped local variables, plus `if`/`else`, short-circuiting `and`/`or`,
-`while`, and `for`. Functions, closures, and classes arrive in later VM
-chapters.
+`while`, `for`, function declarations/calls, `return`, recursion, and the
+native `clock`. Closures and classes arrive in later VM chapters.
 
 ### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
@@ -74,7 +74,7 @@ chapters.
 | 21    | 21      | Global Variables (`print`, expression statements, `var`, global read/assignment) | done |
 | 22    | 22      | Local Variables (block scopes, stack slots, shadowing) | done |
 | 23    | 23      | Control flow (`if`/`while`/`for`/`and`/`or`)         | done |
-| 24    | 24      | Calls and Functions                                  | pending |
+| 24    | 24      | Calls and Functions                                  | done |
 | 25    | 25      | Closures (upvalues)                                  | pending |
 | 26    | 26      | Garbage Collection (safe handle-based mark-sweep)    | pending |
 | 27    | 27      | Classes and Instances                                | pending |

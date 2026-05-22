@@ -47,9 +47,8 @@ pub enum OpCode {
     /// `1.0 / 0.0 == inf`, `0.0 / 0.0 == NaN`, both matching clox).
     /// Runtime error if either operand is not a number.
     Divide = 0x06,
-    /// `OP_RETURN` — return from the current function (or end the
-    /// top-level program in chapter 15, which has no functions yet).
-    /// At top level this ends [`crate::vm::Vm::interpret`].
+    /// `OP_RETURN` — return from the current function. In the implicit
+    /// top-level script frame this ends [`crate::vm::Vm::interpret`].
     Return = 0x07,
     /// `OP_NIL` — push `nil`.
     Nil = 0x08,
@@ -91,6 +90,9 @@ pub enum OpCode {
     JumpIfFalse = 0x17,
     /// `OP_LOOP <offset>` — jump backward by a 16-bit offset.
     Loop = 0x18,
+    /// `OP_CALL <arg_count>` — call the callee below `arg_count`
+    /// arguments on the stack.
+    Call = 0x19,
 }
 
 impl OpCode {
@@ -124,6 +126,7 @@ impl OpCode {
             0x16 => Some(Self::Jump),
             0x17 => Some(Self::JumpIfFalse),
             0x18 => Some(Self::Loop),
+            0x19 => Some(Self::Call),
             _ => None,
         }
     }
@@ -156,6 +159,7 @@ impl OpCode {
             Self::Jump => "OP_JUMP",
             Self::JumpIfFalse => "OP_JUMP_IF_FALSE",
             Self::Loop => "OP_LOOP",
+            Self::Call => "OP_CALL",
         }
     }
 }
@@ -213,8 +217,8 @@ impl LineRle {
 ///
 /// Chapter 14 keeps a `Chunk` simple: a flat byte stream, a constant
 /// pool, and a side table from byte offset to source line. Later
-/// chapters will hang more metadata off it (e.g. function names in
-/// chapter 24).
+/// chapters hang more metadata off heap objects that own chunks (e.g.
+/// function names in chapter 24).
 #[derive(Debug, Default, Clone)]
 pub struct Chunk {
     /// Linear byte-encoded instruction stream.
@@ -297,6 +301,7 @@ mod tests {
             OpCode::Jump,
             OpCode::JumpIfFalse,
             OpCode::Loop,
+            OpCode::Call,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -375,5 +380,6 @@ mod tests {
         assert_eq!(OpCode::Jump.mnemonic(), "OP_JUMP");
         assert_eq!(OpCode::JumpIfFalse.mnemonic(), "OP_JUMP_IF_FALSE");
         assert_eq!(OpCode::Loop.mnemonic(), "OP_LOOP");
+        assert_eq!(OpCode::Call.mnemonic(), "OP_CALL");
     }
 }
