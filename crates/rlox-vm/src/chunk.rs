@@ -93,6 +93,19 @@ pub enum OpCode {
     /// `OP_CALL <arg_count>` — call the callee below `arg_count`
     /// arguments on the stack.
     Call = 0x19,
+    /// `OP_CLOSURE <idx> <upvalue operands...>` — create a runtime
+    /// closure around a function constant. Each captured upvalue adds
+    /// two operand bytes: `is_local` and `index`.
+    Closure = 0x1a,
+    /// `OP_GET_UPVALUE <slot>` — read a captured local/upvalue through
+    /// the current closure's upvalue array.
+    GetUpvalue = 0x1b,
+    /// `OP_SET_UPVALUE <slot>` — assign through the current closure's
+    /// upvalue array. Leaves the assigned value on the stack.
+    SetUpvalue = 0x1c,
+    /// `OP_CLOSE_UPVALUE` — close the captured local currently on top
+    /// of the stack, then pop it.
+    CloseUpvalue = 0x1d,
 }
 
 impl OpCode {
@@ -127,6 +140,10 @@ impl OpCode {
             0x17 => Some(Self::JumpIfFalse),
             0x18 => Some(Self::Loop),
             0x19 => Some(Self::Call),
+            0x1a => Some(Self::Closure),
+            0x1b => Some(Self::GetUpvalue),
+            0x1c => Some(Self::SetUpvalue),
+            0x1d => Some(Self::CloseUpvalue),
             _ => None,
         }
     }
@@ -160,6 +177,10 @@ impl OpCode {
             Self::JumpIfFalse => "OP_JUMP_IF_FALSE",
             Self::Loop => "OP_LOOP",
             Self::Call => "OP_CALL",
+            Self::Closure => "OP_CLOSURE",
+            Self::GetUpvalue => "OP_GET_UPVALUE",
+            Self::SetUpvalue => "OP_SET_UPVALUE",
+            Self::CloseUpvalue => "OP_CLOSE_UPVALUE",
         }
     }
 }
@@ -302,6 +323,10 @@ mod tests {
             OpCode::JumpIfFalse,
             OpCode::Loop,
             OpCode::Call,
+            OpCode::Closure,
+            OpCode::GetUpvalue,
+            OpCode::SetUpvalue,
+            OpCode::CloseUpvalue,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -381,5 +406,9 @@ mod tests {
         assert_eq!(OpCode::JumpIfFalse.mnemonic(), "OP_JUMP_IF_FALSE");
         assert_eq!(OpCode::Loop.mnemonic(), "OP_LOOP");
         assert_eq!(OpCode::Call.mnemonic(), "OP_CALL");
+        assert_eq!(OpCode::Closure.mnemonic(), "OP_CLOSURE");
+        assert_eq!(OpCode::GetUpvalue.mnemonic(), "OP_GET_UPVALUE");
+        assert_eq!(OpCode::SetUpvalue.mnemonic(), "OP_SET_UPVALUE");
+        assert_eq!(OpCode::CloseUpvalue.mnemonic(), "OP_CLOSE_UPVALUE");
     }
 }

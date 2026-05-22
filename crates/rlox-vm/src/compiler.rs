@@ -1,4 +1,4 @@
-//! Chapter 24 — Calls and Functions.
+//! Chapter 25 — Closures.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -13,6 +13,7 @@
 //! scopes and stack-slot locals. Chapter 23 compiles structured
 //! control flow to raw forward and backward jumps. Chapter 24 adds
 //! first-class functions, calls, `return`, and native functions.
+//! Chapter 25 adds closures and upvalues for captured locals.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -134,6 +135,14 @@ struct Local {
     /// `None` while its initializer is compiling. A read during that
     /// window is the chapter-22 self-initializer compile error.
     depth: Option<usize>,
+    /// True when a nested function captures this local.
+    is_captured: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpvalueRef {
+    index: u8,
+    is_local: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +158,7 @@ struct CompileState {
     scope_depth: usize,
     function_type: FunctionType,
     function_arity: u8,
+    upvalues: Vec<UpvalueRef>,
 }
 
 impl CompileState {
@@ -159,6 +169,7 @@ impl CompileState {
             scope_depth: 0,
             function_type: FunctionType::Script,
             function_arity: 0,
+            upvalues: Vec::new(),
         }
     }
 
@@ -168,10 +179,12 @@ impl CompileState {
             locals: vec![Local {
                 name: Token::new(TokenType::Identifier, "", None, name.line),
                 depth: Some(0),
+                is_captured: false,
             }],
             scope_depth: 0,
             function_type: FunctionType::Function,
             function_arity: 0,
+            upvalues: Vec::new(),
         }
     }
 }
@@ -283,6 +296,13 @@ struct Compiler<'src, 'heap> {
     function_type: FunctionType,
     /// Number of parameters in the current function target.
     function_arity: u8,
+    /// Upvalues captured by the current function target.
+    upvalues: Vec<UpvalueRef>,
+    /// Compiler states for lexically enclosing function bodies. The
+    /// active state stays in the direct fields above for minimal churn
+    /// with the chapter-24 compiler; this stack lets chapter 25 resolve
+    /// captured locals through nested function boundaries.
+    enclosing: Vec<CompileState>,
     errors: Vec<LoxError>,
     /// While in panic mode, errors are discarded until we synchronise.
     panic_mode: bool,
@@ -301,6 +321,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             scope_depth: state.scope_depth,
             function_type: state.function_type,
             function_arity: state.function_arity,
+            upvalues: state.upvalues,
+            enclosing: Vec::new(),
             errors: Vec::new(),
             panic_mode: false,
         }
@@ -377,17 +399,23 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             scope_depth: self.scope_depth,
             function_type: self.function_type,
             function_arity: self.function_arity,
+            upvalues: std::mem::take(&mut self.upvalues),
         }
     }
 
     fn replace_state(&mut self, state: CompileState) -> CompileState {
         let old = self.take_state();
+        self.set_state(state);
+        old
+    }
+
+    fn set_state(&mut self, state: CompileState) {
         self.chunk = state.chunk;
         self.locals = state.locals;
         self.scope_depth = state.scope_depth;
         self.function_type = state.function_type;
         self.function_arity = state.function_arity;
-        old
+        self.upvalues = state.upvalues;
     }
 
     fn emit_op(&mut self, op: OpCode) {
@@ -561,6 +589,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
 
     fn function(&mut self, name: &Token) {
         let outer = self.replace_state(CompileState::function(name));
+        self.enclosing.push(outer);
         self.begin_scope();
 
         self.consume(TokenType::LeftParen, "Expect '(' after function name.");
@@ -584,14 +613,30 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         self.block();
         self.emit_return();
 
-        let arity = self.function_arity;
-        let chunk = std::mem::take(&mut self.chunk);
-        self.replace_state(outer);
+        let inner = self.take_state();
+        let arity = inner.function_arity;
+        let upvalues = inner.upvalues;
+        let chunk = inner.chunk;
+        let upvalue_count =
+            u8::try_from(upvalues.len()).expect("upvalues are capped at 256 entries");
+        let outer = self
+            .enclosing
+            .pop()
+            .expect("function compiler must have an enclosing state");
+        self.set_state(outer);
 
-        let handle =
-            self.heap
-                .alloc_function(Function::new(Some(name.lexeme.clone()), arity, chunk));
-        self.emit_constant(Value::Obj(handle));
+        let handle = self.heap.alloc_function(Function::with_upvalues(
+            Some(name.lexeme.clone()),
+            arity,
+            upvalue_count,
+            chunk,
+        ));
+        let idx = self.chunk.add_constant(Value::Obj(handle));
+        self.emit_op_with_byte(OpCode::Closure, idx);
+        for upvalue in upvalues {
+            self.emit_byte(u8::from(upvalue.is_local));
+            self.emit_byte(upvalue.index);
+        }
     }
 
     fn for_statement(&mut self) {
@@ -775,7 +820,17 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             .last()
             .is_some_and(|local| local.depth.unwrap_or(usize::MAX) > self.scope_depth)
         {
-            self.emit_op(OpCode::Pop);
+            let op = if self
+                .locals
+                .last()
+                .expect("loop condition ensures a local exists")
+                .is_captured
+            {
+                OpCode::CloseUpvalue
+            } else {
+                OpCode::Pop
+            };
+            self.emit_op(op);
             self.locals.pop();
         }
     }
@@ -803,7 +858,11 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             self.error_at_previous("Too many local variables in function.");
             return;
         }
-        self.locals.push(Local { name, depth: None });
+        self.locals.push(Local {
+            name,
+            depth: None,
+            is_captured: false,
+        });
     }
 
     fn mark_initialized(&mut self) {
@@ -831,6 +890,80 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             self.error_at_previous("Can't read local variable in its own initializer.");
         }
         Some(u8::try_from(slot).expect("locals are capped at 256 slots"))
+    }
+
+    fn resolve_upvalue(&mut self, name: &Token) -> Option<u8> {
+        if self.enclosing.is_empty() {
+            return None;
+        }
+        self.resolve_upvalue_for_state(self.enclosing.len(), name)
+    }
+
+    fn resolve_upvalue_for_state(&mut self, state_index: usize, name: &Token) -> Option<u8> {
+        if state_index == 0 {
+            return None;
+        }
+
+        let enclosing_index = state_index - 1;
+        if let Some(local) = self.resolve_local_in_enclosing(enclosing_index, name) {
+            self.enclosing[enclosing_index].locals[usize::from(local)].is_captured = true;
+            return Some(self.add_upvalue_to_state(state_index, local, true));
+        }
+
+        let upvalue = self.resolve_upvalue_for_state(enclosing_index, name)?;
+        Some(self.add_upvalue_to_state(state_index, upvalue, false))
+    }
+
+    fn resolve_local_in_enclosing(&mut self, state_index: usize, name: &Token) -> Option<u8> {
+        let found = self.enclosing[state_index]
+            .locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, local)| local.name.lexeme == name.lexeme)
+            .map(|(slot, local)| (slot, local.depth.is_none()));
+
+        let (slot, is_uninitialized) = found?;
+        if is_uninitialized {
+            self.error_at_previous("Can't read local variable in its own initializer.");
+        }
+        Some(u8::try_from(slot).expect("locals are capped at 256 slots"))
+    }
+
+    fn add_upvalue_to_state(&mut self, state_index: usize, index: u8, is_local: bool) -> u8 {
+        let existing = self
+            .upvalues_for_state(state_index)
+            .iter()
+            .position(|upvalue| upvalue.index == index && upvalue.is_local == is_local);
+        if let Some(existing) = existing {
+            return u8::try_from(existing).expect("upvalues are capped at 256 entries");
+        }
+
+        if self.upvalues_for_state(state_index).len() > u8::MAX as usize {
+            self.error_at_previous("Too many closure variables in function.");
+            return 0;
+        }
+
+        self.upvalues_for_state_mut(state_index)
+            .push(UpvalueRef { index, is_local });
+        u8::try_from(self.upvalues_for_state(state_index).len() - 1)
+            .expect("upvalues are capped at 256 entries")
+    }
+
+    fn upvalues_for_state(&self, state_index: usize) -> &[UpvalueRef] {
+        if state_index == self.enclosing.len() {
+            &self.upvalues
+        } else {
+            &self.enclosing[state_index].upvalues
+        }
+    }
+
+    fn upvalues_for_state_mut(&mut self, state_index: usize) -> &mut Vec<UpvalueRef> {
+        if state_index == self.enclosing.len() {
+            &mut self.upvalues
+        } else {
+            &mut self.enclosing[state_index].upvalues
+        }
     }
 
     fn literal(&mut self) {
@@ -872,6 +1005,8 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     fn named_variable(&mut self, name: &Token, can_assign: bool) {
         let (get_op, set_op, arg) = if let Some(local) = self.resolve_local(name) {
             (OpCode::GetLocal, OpCode::SetLocal, local)
+        } else if let Some(upvalue) = self.resolve_upvalue(name) {
+            (OpCode::GetUpvalue, OpCode::SetUpvalue, upvalue)
         } else {
             (
                 OpCode::GetGlobal,
@@ -1693,5 +1828,184 @@ mod tests {
     fn compiler_emits_call_opcode_for_function_calls() {
         let (chunk, _) = compile_ok("fun f() {} f();");
         assert!(chunk.code.contains(&(OpCode::Call as u8)));
+    }
+
+    #[test]
+    fn closure_captures_nearest_enclosing_local() {
+        let src = r#"
+            var x = "global";
+            fun outer() {
+                var x = "outer";
+                fun inner() {
+                    print x;
+                }
+                inner();
+            }
+            outer();
+        "#;
+        assert_eq!(run(src).0, "outer\n");
+    }
+
+    #[test]
+    fn closure_keeps_local_alive_after_return() {
+        let src = r#"
+            fun makeClosure() {
+                var local = "local";
+                fun closure() {
+                    print local;
+                }
+                return closure;
+            }
+
+            var closure = makeClosure();
+            closure();
+        "#;
+        assert_eq!(run(src).0, "local\n");
+    }
+
+    #[test]
+    fn closures_capture_variables_not_values() {
+        let src = r#"
+            var globalSet;
+            var globalGet;
+
+            fun main() {
+                var a = "initial";
+                fun set() { a = "updated"; }
+                fun get() { print a; }
+                globalSet = set;
+                globalGet = get;
+            }
+
+            main();
+            globalSet();
+            globalGet();
+        "#;
+        assert_eq!(run(src).0, "updated\n");
+    }
+
+    #[test]
+    fn nested_closures_capture_through_intermediate_function() {
+        let src = r#"
+            fun outer() {
+                var a = "outer";
+                fun middle() {
+                    fun inner() {
+                        print a;
+                    }
+                    return inner;
+                }
+                return middle;
+            }
+
+            var middle = outer();
+            var inner = middle();
+            inner();
+        "#;
+        assert_eq!(run(src).0, "outer\n");
+    }
+
+    #[test]
+    fn closed_block_local_survives_after_scope_exits() {
+        let src = r#"
+            var global;
+            {
+                var a = "block";
+                fun f() {
+                    print a;
+                }
+                global = f;
+            }
+            global();
+        "#;
+        assert_eq!(run(src).0, "block\n");
+    }
+
+    #[test]
+    fn captured_local_assignment_is_shared_between_calls() {
+        let src = r"
+            fun makeCounter() {
+                var i = 0;
+                fun count() {
+                    i = i + 1;
+                    print i;
+                }
+                return count;
+            }
+
+            var counter = makeCounter();
+            counter();
+            counter();
+        ";
+        assert_eq!(run(src).0, "1\n2\n");
+    }
+
+    #[test]
+    fn local_recursive_function_captures_own_binding() {
+        let src = r"
+            {
+                fun fib(n) {
+                    if (n <= 1) return n;
+                    return fib(n - 2) + fib(n - 1);
+                }
+                print fib(6);
+            }
+        ";
+        assert_eq!(run(src).0, "8\n");
+    }
+
+    #[test]
+    fn compiler_emits_closure_and_upvalue_opcodes_for_captures() {
+        let (chunk, heap) = compile_ok(
+            r#"
+            fun outer() {
+                var a = "capture";
+                fun inner() {
+                    print a;
+                }
+                return inner;
+            }
+            "#,
+        );
+
+        assert!(chunk.code.contains(&(OpCode::Closure as u8)));
+        let function = chunk.constants.iter().find_map(|value| {
+            let Value::Obj(handle) = value else {
+                return None;
+            };
+            let function = heap.as_function(*handle)?;
+            (function.display_name() == "outer").then_some(function)
+        });
+        let outer = function.expect("outer function constant exists");
+        assert!(outer.chunk.code.contains(&(OpCode::Closure as u8)));
+        let inner = outer.chunk.constants.iter().find_map(|value| {
+            let Value::Obj(handle) = value else {
+                return None;
+            };
+            let function = heap.as_function(*handle)?;
+            (function.display_name() == "inner").then_some(function)
+        });
+        assert!(
+            inner
+                .expect("inner function constant exists")
+                .chunk
+                .code
+                .contains(&(OpCode::GetUpvalue as u8))
+        );
+    }
+
+    #[test]
+    fn compiler_emits_close_upvalue_for_captured_block_locals() {
+        let (chunk, _) = compile_ok(
+            r#"
+            var global;
+            {
+                var a = "block";
+                fun f() { print a; }
+                global = f;
+            }
+            "#,
+        );
+        assert!(chunk.code.contains(&(OpCode::CloseUpvalue as u8)));
     }
 }

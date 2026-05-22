@@ -17,11 +17,12 @@
 //!   with a free-list-friendly storage and possibly grow [`Handle`]
 //!   with a generation tag. Today the heap only grows.
 //!
-//! Today the heap stores strings plus chapter-24 callable objects:
-//! [`Obj::Function`] for user-defined Lox functions and [`Obj::Native`]
-//! for built-ins such as `clock`. Chapter 25 (closures), chapter 27
-//! (classes), and chapter 28 (instances) will each contribute new
-//! variants here.
+//! Today the heap stores strings plus callable objects:
+//! [`Obj::Function`] for compiled function prototypes, [`Obj::Closure`]
+//! for runtime function values, [`Obj::Upvalue`] for captured locals,
+//! and [`Obj::Native`] for built-ins such as `clock`. Chapter 27
+//! (classes) and chapter 28 (instances) will contribute new variants
+//! here.
 
 use std::fmt;
 
@@ -56,6 +57,8 @@ pub struct Function {
     pub name: Option<String>,
     /// Number of parameters expected by this function.
     pub arity: u8,
+    /// Number of upvalues captured by closures wrapping this function.
+    pub upvalue_count: u8,
     /// Bytecode body for the function.
     pub chunk: Chunk,
 }
@@ -64,13 +67,78 @@ impl Function {
     /// Create a named or script function.
     #[must_use]
     pub const fn new(name: Option<String>, arity: u8, chunk: Chunk) -> Self {
-        Self { name, arity, chunk }
+        Self {
+            name,
+            arity,
+            upvalue_count: 0,
+            chunk,
+        }
+    }
+
+    /// Create a function with known upvalue metadata.
+    #[must_use]
+    pub const fn with_upvalues(
+        name: Option<String>,
+        arity: u8,
+        upvalue_count: u8,
+        chunk: Chunk,
+    ) -> Self {
+        Self {
+            name,
+            arity,
+            upvalue_count,
+            chunk,
+        }
     }
 
     /// Human-readable name used in value display and diagnostics.
     #[must_use]
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or("<script>")
+    }
+}
+
+/// A runtime closure around a compiled [`Function`].
+#[derive(Debug, Clone)]
+pub struct Closure {
+    /// Handle to the compiled function prototype.
+    pub function: Handle,
+    /// Handles to captured upvalue objects, in compiler-assigned order.
+    pub upvalues: Vec<Handle>,
+}
+
+impl Closure {
+    /// Create a closure for `function`.
+    #[must_use]
+    pub const fn new(function: Handle, upvalues: Vec<Handle>) -> Self {
+        Self { function, upvalues }
+    }
+}
+
+/// Storage location for a captured variable.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum UpvalueLocation {
+    /// The variable still lives in the VM stack at this absolute slot.
+    Open(usize),
+    /// The declaring stack frame has returned; the variable now lives
+    /// in the upvalue object itself.
+    Closed(Value),
+}
+
+/// A captured variable shared by one or more closures.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Upvalue {
+    /// Current storage location for the variable.
+    pub location: UpvalueLocation,
+}
+
+impl Upvalue {
+    /// Create an open upvalue pointing at `slot`.
+    #[must_use]
+    pub const fn open(slot: usize) -> Self {
+        Self {
+            location: UpvalueLocation::Open(slot),
+        }
     }
 }
 
@@ -99,8 +167,12 @@ impl fmt::Debug for NativeFunction {
 pub enum Obj {
     /// A Lox string backed by an owned `String`.
     Str(String),
-    /// A user-defined Lox function.
+    /// A compiled user-defined Lox function prototype.
     Function(Function),
+    /// A runtime callable closure.
+    Closure(Closure),
+    /// A captured local variable.
+    Upvalue(Upvalue),
     /// A native Rust function exposed to Lox.
     Native(NativeFunction),
 }
@@ -133,6 +205,16 @@ impl Heap {
         self.alloc(Obj::Function(function))
     }
 
+    /// Allocate an [`Obj::Closure`] and return its handle.
+    pub fn alloc_closure(&mut self, closure: Closure) -> Handle {
+        self.alloc(Obj::Closure(closure))
+    }
+
+    /// Allocate an [`Obj::Upvalue`] and return its handle.
+    pub fn alloc_upvalue(&mut self, upvalue: Upvalue) -> Handle {
+        self.alloc(Obj::Upvalue(upvalue))
+    }
+
     /// Allocate an [`Obj::Native`] and return its handle.
     pub fn alloc_native(&mut self, native: NativeFunction) -> Handle {
         self.alloc(Obj::Native(native))
@@ -153,15 +235,19 @@ impl Heap {
         &self.objs[h.0 as usize]
     }
 
-    /// Convenience accessor for the (currently only) string variant.
-    /// Returns `None` if the handle points at a non-string object;
-    /// today there are no other kinds, so this is `Some` in practice
-    /// but the helper future-proofs callers.
+    /// Mutably borrow the object referenced by `h`.
+    #[must_use]
+    pub fn get_mut(&mut self, h: Handle) -> &mut Obj {
+        &mut self.objs[h.0 as usize]
+    }
+
+    /// Convenience accessor for string objects. Returns `None` if the
+    /// handle points at a non-string object.
     #[must_use]
     pub fn as_str(&self, h: Handle) -> Option<&str> {
         match self.get(h) {
             Obj::Str(s) => Some(s),
-            Obj::Function(_) | Obj::Native(_) => None,
+            Obj::Function(_) | Obj::Closure(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
         }
     }
 
@@ -170,7 +256,43 @@ impl Heap {
     pub fn as_function(&self, h: Handle) -> Option<&Function> {
         match self.get(h) {
             Obj::Function(function) => Some(function),
-            Obj::Str(_) | Obj::Native(_) => None,
+            Obj::Str(_) | Obj::Closure(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+        }
+    }
+
+    /// Convenience accessor for closure objects.
+    #[must_use]
+    pub fn as_closure(&self, h: Handle) -> Option<&Closure> {
+        match self.get(h) {
+            Obj::Closure(closure) => Some(closure),
+            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+        }
+    }
+
+    /// Mutable convenience accessor for closure objects.
+    #[must_use]
+    pub fn as_closure_mut(&mut self, h: Handle) -> Option<&mut Closure> {
+        match self.get_mut(h) {
+            Obj::Closure(closure) => Some(closure),
+            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+        }
+    }
+
+    /// Convenience accessor for upvalue objects.
+    #[must_use]
+    pub fn as_upvalue(&self, h: Handle) -> Option<Upvalue> {
+        match self.get(h) {
+            Obj::Upvalue(upvalue) => Some(*upvalue),
+            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Native(_) => None,
+        }
+    }
+
+    /// Mutable convenience accessor for upvalue objects.
+    #[must_use]
+    pub fn as_upvalue_mut(&mut self, h: Handle) -> Option<&mut Upvalue> {
+        match self.get_mut(h) {
+            Obj::Upvalue(upvalue) => Some(upvalue),
+            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Native(_) => None,
         }
     }
 
@@ -179,7 +301,7 @@ impl Heap {
     pub fn as_native(&self, h: Handle) -> Option<NativeFunction> {
         match self.get(h) {
             Obj::Native(native) => Some(*native),
-            Obj::Str(_) | Obj::Function(_) => None,
+            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Upvalue(_) => None,
         }
     }
 
@@ -230,13 +352,15 @@ mod tests {
     }
 
     #[test]
-    fn alloc_function_and_native_store_callable_metadata() {
+    fn alloc_callables_and_upvalues_store_metadata() {
         fn native(_args: &[Value]) -> Value {
             Value::Nil
         }
 
         let mut h = Heap::new();
         let function = h.alloc_function(Function::new(Some("f".to_string()), 2, Chunk::new()));
+        let upvalue = h.alloc_upvalue(Upvalue::open(3));
+        let closure = h.alloc_closure(Closure::new(function, vec![upvalue]));
         let native = h.alloc_native(NativeFunction {
             name: "clock",
             arity: 0,
@@ -244,6 +368,11 @@ mod tests {
         });
 
         assert_eq!(h.as_function(function).unwrap().display_name(), "f");
+        assert_eq!(h.as_closure(closure).unwrap().function, function);
+        assert_eq!(
+            h.as_upvalue(upvalue).unwrap().location,
+            UpvalueLocation::Open(3)
+        );
         assert_eq!(h.as_native(native).unwrap().name, "clock");
         assert_eq!(h.as_str(function), None);
         assert!(h.as_function(native).is_none());

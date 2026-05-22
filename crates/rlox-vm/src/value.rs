@@ -39,8 +39,8 @@ pub enum Value {
     Bool(bool),
     /// A 64-bit IEEE-754 floating-point number — the only Lox numeric type.
     Number(f64),
-    /// A heap-allocated object (chapter 19: only strings; later chapters
-    /// add functions, closures, classes, and instances).
+    /// A heap-allocated object (strings, callables, captured upvalues;
+    /// later chapters add classes and instances).
     Obj(Handle),
 }
 
@@ -121,6 +121,17 @@ impl fmt::Display for ValueDisplay<'_> {
                     Some(name) => write!(f, "<fn {name}>"),
                     None => f.write_str("<script>"),
                 },
+                Obj::Closure(closure) => {
+                    let function = self
+                        .heap
+                        .as_function(closure.function)
+                        .expect("closure references non-function object");
+                    match &function.name {
+                        Some(name) => write!(f, "<fn {name}>"),
+                        None => f.write_str("<script>"),
+                    }
+                }
+                Obj::Upvalue(_) => f.write_str("<upvalue>"),
                 Obj::Native(native) => write!(f, "<native fn {}>", native.name),
             },
             // Inline variants delegate to the bare Display impl below.

@@ -162,3 +162,41 @@ fn run_to_handles_functions_and_recursion() {
 fn run_to_exposes_native_clock() {
     assert_eq!(run("print clock() >= 0;").unwrap(), "true\n");
 }
+
+#[test]
+fn run_to_handles_escaping_closures() {
+    let src = r"
+        fun makeCounter() {
+            var i = 0;
+            fun count() {
+                i = i + 1;
+                return i;
+            }
+            return count;
+        }
+
+        var counter = makeCounter();
+        print counter();
+        print counter();
+    ";
+    assert_eq!(run(src).unwrap(), "1\n2\n");
+}
+
+#[test]
+fn run_to_handles_nested_closure_capture() {
+    let src = r#"
+        fun outer() {
+            var a = "outer";
+            fun middle() {
+                fun inner() {
+                    print a;
+                }
+                return inner;
+            }
+            return middle;
+        }
+
+        outer()()();
+    "#;
+    assert_eq!(run(src).unwrap(), "outer\n");
+}

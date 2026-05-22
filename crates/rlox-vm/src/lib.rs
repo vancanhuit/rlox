@@ -18,6 +18,7 @@
 //! - chapter 23: `if`/`else`, `and`/`or`, `while`, and `for`.
 //! - chapter 24: function declarations, calls, `return`, recursion,
 //!   and the native `clock`.
+//! - chapter 25: closures and upvalues for captured locals.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
@@ -25,7 +26,7 @@
 //! [`run_to`] entry point. The umbrella `rlox` binary's `--features vm`
 //! build wires [`run_to`] into its CLI. The current VM executes a Lox
 //! program made of top-level statements, global/local declarations,
-//! structured control flow, and first-class functions.
+//! structured control flow, first-class functions, and closures.
 
 pub mod chunk;
 pub mod compiler;
@@ -36,7 +37,7 @@ pub mod vm;
 
 pub use chunk::{Chunk, OpCode};
 pub use compiler::compile;
-pub use heap::{Function, Handle, Heap, NativeFunction, Obj};
+pub use heap::{Closure, Function, Handle, Heap, NativeFunction, Obj, Upvalue, UpvalueLocation};
 pub use rlox_shared::error::{LoxError, Result};
 pub use value::Value;
 pub use vm::{Vm, VmError, VmResult};
