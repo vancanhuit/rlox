@@ -99,9 +99,10 @@ fn binary_exits_70_on_runtime_error() {
 
 // ---- vm-only smoke tests ----
 //
-// Chapter 27 gives the VM top-level statements, globals, block-scoped
+// Chapter 28 gives the VM top-level statements, globals, block-scoped
 // locals, structured control flow, first-class functions, the native
-// `clock`, closures, classes, instances, and dynamic fields.
+// `clock`, closures, classes, instances, dynamic fields, methods, and
+// initializers.
 
 #[cfg(feature = "vm")]
 #[test]
@@ -286,4 +287,33 @@ print pair.first + pair.second;",
         String::from_utf8_lossy(&out.stdout),
         "Pair\nPair instance\n3\n"
     );
+}
+
+#[cfg(feature = "vm")]
+#[test]
+fn vm_binary_runs_method_initializer_program() {
+    let path = write_lox(
+        "vm_methods",
+        r#"class Greeter {
+  init(name) {
+    this.name = name;
+  }
+
+  greet() {
+    print "hi, " + this.name;
+  }
+}
+
+var greeter = Greeter("lox");
+var greet = greeter.greet;
+greet();"#,
+    );
+    let out = Command::new(rlox_bin()).arg(&path).output().unwrap();
+    fs::remove_file(&path).ok();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hi, lox\n");
 }

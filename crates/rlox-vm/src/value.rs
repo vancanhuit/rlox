@@ -133,6 +133,20 @@ impl fmt::Display for ValueDisplay<'_> {
                         None => f.write_str("<script>"),
                     }
                 }
+                Obj::BoundMethod(bound_method) => {
+                    let closure = self
+                        .heap
+                        .as_closure(bound_method.method)
+                        .expect("bound method references non-closure object");
+                    let function = self
+                        .heap
+                        .as_function(closure.function)
+                        .expect("closure references non-function object");
+                    match &function.name {
+                        Some(name) => write!(f, "<fn {name}>"),
+                        None => f.write_str("<script>"),
+                    }
+                }
                 Obj::Upvalue(_) => f.write_str("<upvalue>"),
                 Obj::Native(native) => write!(f, "<native fn {}>", native.name),
                 Obj::Class(class) => f.write_str(&class.name),
@@ -252,6 +266,26 @@ mod tests {
         assert_eq!(
             Value::Obj(instance).display(&heap).to_string(),
             "Bagel instance"
+        );
+    }
+
+    #[test]
+    fn display_with_heap_renders_bound_methods_by_function_name() {
+        let mut heap = Heap::new();
+        let function = heap.alloc_function(crate::heap::Function::new(
+            Some("taste".to_string()),
+            0,
+            crate::chunk::Chunk::new(),
+        ));
+        let closure = heap.alloc_closure(crate::heap::Closure::new(function, Vec::new()));
+        let class = heap.alloc_class(crate::heap::Class::new("Bagel"));
+        let instance = heap.alloc_instance(crate::heap::Instance::new(class));
+        let bound_method =
+            heap.alloc_bound_method(crate::heap::BoundMethod::new(Value::Obj(instance), closure));
+
+        assert_eq!(
+            Value::Obj(bound_method).display(&heap).to_string(),
+            "<fn taste>"
         );
     }
 }

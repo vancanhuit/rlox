@@ -21,6 +21,7 @@
 //! - chapter 25: closures and upvalues for captured locals.
 //! - chapter 26: safe handle-based mark-sweep garbage collection.
 //! - chapter 27: classes, instances, and dynamic fields.
+//! - chapter 28: methods, `this`, initializers, and optimized invokes.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
@@ -29,7 +30,8 @@
 //! build wires [`run_to`] into its CLI. The current VM executes a Lox
 //! program made of top-level statements, global/local declarations,
 //! structured control flow, first-class functions, closures, classes,
-//! instances, dynamic fields, and VM-managed object reclamation.
+//! instances, dynamic fields, methods, initializers, and VM-managed
+//! object reclamation.
 
 pub mod chunk;
 pub mod compiler;
@@ -41,8 +43,8 @@ pub mod vm;
 pub use chunk::{Chunk, OpCode};
 pub use compiler::compile;
 pub use heap::{
-    Class, Closure, Function, GcRoots, GcStats, Handle, Heap, Instance, NativeFunction, Obj,
-    Upvalue, UpvalueLocation,
+    BoundMethod, Class, Closure, Function, GcRoots, GcStats, Handle, Heap, Instance,
+    NativeFunction, Obj, Upvalue, UpvalueLocation,
 };
 pub use rlox_shared::error::{LoxError, Result};
 pub use value::Value;

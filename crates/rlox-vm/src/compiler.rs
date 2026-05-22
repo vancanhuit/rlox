@@ -1,4 +1,4 @@
-//! Chapter 27 — Classes and Instances.
+//! Chapter 28 — Methods and Initializers.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -15,6 +15,8 @@
 //! first-class functions, calls, `return`, and native functions.
 //! Chapter 25 adds closures and upvalues for captured locals. Chapter
 //! 27 adds class declarations plus instance field get/set expressions.
+//! Chapter 28 adds methods, `this`, initializers, and optimized method
+//! invocation bytecode.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -119,6 +121,8 @@ enum ParseFn {
     Call,
     /// Parses instance property get/set expressions.
     Dot,
+    /// Parses `this` inside methods.
+    This,
     /// Parses short-circuiting logical `and`.
     And,
     /// Parses short-circuiting logical `or`.
@@ -152,6 +156,8 @@ struct UpvalueRef {
 enum FunctionType {
     Script,
     Function,
+    Method,
+    Initializer,
 }
 
 #[derive(Debug)]
@@ -176,16 +182,20 @@ impl CompileState {
         }
     }
 
-    fn function(name: &Token) -> Self {
+    fn function(name: &Token, function_type: FunctionType) -> Self {
+        let receiver_name = match function_type {
+            FunctionType::Method | FunctionType::Initializer => "this",
+            FunctionType::Script | FunctionType::Function => "",
+        };
         Self {
             chunk: Chunk::new(),
             locals: vec![Local {
-                name: Token::new(TokenType::Identifier, "", None, name.line),
+                name: Token::new(TokenType::Identifier, receiver_name, None, name.line),
                 depth: Some(0),
                 is_captured: false,
             }],
             scope_depth: 0,
-            function_type: FunctionType::Function,
+            function_type,
             function_arity: 0,
             upvalues: Vec::new(),
         }
@@ -253,6 +263,11 @@ const fn rule_for(t: TokenType) -> ParseRule {
             infix: ParseFn::None,
             precedence: Precedence::None,
         },
+        TokenType::This => ParseRule {
+            prefix: ParseFn::This,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
         // Chapter 18 — logical NOT (prefix only).
         TokenType::Bang => ParseRule {
             prefix: ParseFn::Unary,
@@ -306,6 +321,10 @@ struct Compiler<'src, 'heap> {
     function_arity: u8,
     /// Upvalues captured by the current function target.
     upvalues: Vec<UpvalueRef>,
+    /// Nesting depth of class bodies being compiled. Non-zero means
+    /// `this` is a valid expression and will resolve through locals or
+    /// upvalues.
+    class_depth: usize,
     /// Compiler states for lexically enclosing function bodies. The
     /// active state stays in the direct fields above for minimal churn
     /// with the chapter-24 compiler; this stack lets chapter 25 resolve
@@ -330,6 +349,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             function_type: state.function_type,
             function_arity: state.function_arity,
             upvalues: state.upvalues,
+            class_depth: 0,
             enclosing: Vec::new(),
             errors: Vec::new(),
             panic_mode: false,
@@ -452,7 +472,11 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_op(OpCode::Nil);
+        if self.function_type == FunctionType::Initializer {
+            self.emit_op_with_byte(OpCode::GetLocal, 0);
+        } else {
+            self.emit_op(OpCode::Nil);
+        }
         self.emit_op(OpCode::Return);
     }
 
@@ -547,6 +571,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             ParseFn::Variable => self.variable(can_assign),
             ParseFn::Call => self.call(),
             ParseFn::Dot => self.dot(can_assign),
+            ParseFn::This => self.this(),
             ParseFn::And => self.and(),
             ParseFn::Or => self.or(),
         }
@@ -582,9 +607,16 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
 
         self.emit_op_with_byte(OpCode::Class, name_constant);
         self.define_variable(name_constant);
+        self.class_depth += 1;
+        self.named_variable(&name, false);
 
         self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
+        while !self.check(TokenType::RightBrace) && !self.check(TokenType::Eof) {
+            self.method();
+        }
         self.consume(TokenType::RightBrace, "Expect '}' after class body.");
+        self.emit_op(OpCode::Pop);
+        self.class_depth -= 1;
     }
 
     fn statement(&mut self) {
@@ -611,12 +643,12 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         let global = self.parse_variable("Expect function name.");
         let name = self.previous_token().clone();
         self.mark_initialized();
-        self.function(&name);
+        self.function(&name, FunctionType::Function);
         self.define_variable(global);
     }
 
-    fn function(&mut self, name: &Token) {
-        let outer = self.replace_state(CompileState::function(name));
+    fn function(&mut self, name: &Token, function_type: FunctionType) {
+        let outer = self.replace_state(CompileState::function(name, function_type));
         self.enclosing.push(outer);
         self.begin_scope();
 
@@ -665,6 +697,23 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             self.emit_byte(u8::from(upvalue.is_local));
             self.emit_byte(upvalue.index);
         }
+    }
+
+    fn method(&mut self) {
+        self.consume(TokenType::Identifier, "Expect method name.");
+        if self.previous_token().ttype != TokenType::Identifier {
+            return;
+        }
+
+        let name = self.previous_token().clone();
+        let constant = self.identifier_constant(&name);
+        let function_type = if name.lexeme == "init" {
+            FunctionType::Initializer
+        } else {
+            FunctionType::Method
+        };
+        self.function(&name, function_type);
+        self.emit_op_with_byte(OpCode::Method, constant);
     }
 
     fn for_statement(&mut self) {
@@ -771,11 +820,15 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         }
 
         if self.match_token(TokenType::Semicolon) {
-            self.emit_op(OpCode::Nil);
-        } else {
-            self.expression();
-            self.consume(TokenType::Semicolon, "Expect ';' after return value.");
+            self.emit_return();
+            return;
         }
+
+        if self.function_type == FunctionType::Initializer {
+            self.error_at_previous("Can't return a value from an initializer.");
+        }
+        self.expression();
+        self.consume(TokenType::Semicolon, "Expect ';' after return value.");
         self.emit_op(OpCode::Return);
     }
 
@@ -1067,9 +1120,23 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         if can_assign && self.match_token(TokenType::Equal) {
             self.expression();
             self.emit_op_with_byte(OpCode::SetProperty, name);
+        } else if self.match_token(TokenType::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit_op_with_byte(OpCode::Invoke, name);
+            self.emit_byte(arg_count);
         } else {
             self.emit_op_with_byte(OpCode::GetProperty, name);
         }
+    }
+
+    fn this(&mut self) {
+        if self.class_depth == 0 {
+            self.error_at_previous("Can't use 'this' outside of a class.");
+            return;
+        }
+
+        let name = self.previous_token().clone();
+        self.named_variable(&name, false);
     }
 
     fn argument_list(&mut self) -> u8 {
@@ -2101,6 +2168,114 @@ mod tests {
     }
 
     #[test]
+    fn methods_can_be_declared_and_invoked() {
+        let src = r#"
+            class Brunch {
+                bacon() { print "crispy"; }
+                eggs() { print "fried"; }
+            }
+
+            Brunch().bacon();
+            Brunch().eggs();
+        "#;
+        assert_eq!(run(src).0, "crispy\nfried\n");
+    }
+
+    #[test]
+    fn this_reads_fields_and_bound_methods_keep_their_receiver() {
+        let src = r#"
+            class Person {
+                sayName() {
+                    print this.name;
+                }
+            }
+
+            var jane = Person();
+            jane.name = "Jane";
+            var method = jane.sayName;
+
+            var bill = Person();
+            bill.name = "Bill";
+
+            method();
+            bill.sayName();
+        "#;
+        assert_eq!(run(src).0, "Jane\nBill\n");
+    }
+
+    #[test]
+    fn nested_closures_inside_methods_can_capture_this() {
+        let src = r#"
+            class Thing {
+                makePrinter() {
+                    fun printer() {
+                        print this.label;
+                    }
+                    return printer;
+                }
+            }
+
+            var thing = Thing();
+            thing.label = "captured";
+            var printer = thing.makePrinter();
+            printer();
+        "#;
+        assert_eq!(run(src).0, "captured\n");
+    }
+
+    #[test]
+    fn initializers_set_fields_and_return_the_instance() {
+        let src = r#"
+            class Coffee {
+                init(name) {
+                    this.name = name;
+                }
+
+                brew() {
+                    return "brew " + this.name;
+                }
+            }
+
+            print Coffee("espresso").brew();
+        "#;
+        assert_eq!(run(src).0, "brew espresso\n");
+    }
+
+    #[test]
+    fn bare_return_from_initializer_returns_this() {
+        let src = r"
+            class Foo {
+                init() {
+                    return;
+                }
+            }
+
+            print Foo();
+        ";
+        assert_eq!(run(src).0, "Foo instance\n");
+    }
+
+    #[test]
+    fn callable_fields_shadow_methods_during_invoke() {
+        let src = r#"
+            fun replacement() {
+                print "field";
+            }
+
+            class Box {
+                value() {
+                    print "method";
+                }
+            }
+
+            var box = Box();
+            box.value = replacement;
+            box.value();
+        "#;
+        assert_eq!(run(src).0, "field\n");
+    }
+
+    #[test]
     fn property_access_runtime_errors_match_clox() {
         let VmError::Runtime { message, .. } = run_err(
             r"
@@ -2123,6 +2298,58 @@ mod tests {
     }
 
     #[test]
+    fn method_runtime_errors_match_clox() {
+        let VmError::Runtime { message, .. } = run_err(
+            r"
+            class Bagel {}
+            Bagel(1);
+            ",
+        );
+        assert_eq!(message, "Expected 0 arguments but got 1.");
+
+        let VmError::Runtime { message, .. } = run_err("\"not instance\".method();");
+        assert_eq!(message, "Only instances have methods.");
+
+        let VmError::Runtime { message, .. } = run_err(
+            r"
+            class Bagel {}
+            Bagel().missing();
+            ",
+        );
+        assert_eq!(message, "Undefined property 'missing'.");
+    }
+
+    #[test]
+    fn this_and_initializer_return_value_are_compile_errors_when_invalid() {
+        let errs = compile_err("print this;");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Can't use 'this' outside of a class."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err(
+            r"
+            class Foo {
+                init() {
+                    return 1;
+                }
+            }
+            ",
+        );
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. }
+                    if message == "Can't return a value from an initializer."
+            )),
+            "errors were: {errs:?}"
+        );
+    }
+
+    #[test]
     fn compiler_emits_class_and_property_opcodes() {
         let (chunk, _) = compile_ok(
             r"
@@ -2136,5 +2363,43 @@ mod tests {
         assert!(chunk.code.contains(&(OpCode::Class as u8)));
         assert!(chunk.code.contains(&(OpCode::SetProperty as u8)));
         assert!(chunk.code.contains(&(OpCode::GetProperty as u8)));
+    }
+
+    #[test]
+    fn compiler_emits_method_and_invoke_opcodes() {
+        let (chunk, heap) = compile_ok(
+            r#"
+            class Greeter {
+                greet(name) {
+                    print "hi, " + name;
+                }
+            }
+            Greeter().greet("lox");
+            "#,
+        );
+
+        assert!(chunk.code.contains(&(OpCode::Method as u8)));
+        assert!(chunk.code.contains(&(OpCode::Invoke as u8)));
+        let method_function = heap
+            .as_function(
+                chunk
+                    .constants
+                    .iter()
+                    .find_map(|value| {
+                        let Value::Obj(handle) = value else {
+                            return None;
+                        };
+                        let function = heap.as_function(*handle)?;
+                        (function.display_name() == "greet").then_some(*handle)
+                    })
+                    .expect("method function constant exists"),
+            )
+            .expect("constant points at function");
+        assert!(
+            method_function
+                .chunk
+                .code
+                .contains(&(OpCode::GetLocal as u8))
+        );
     }
 }
