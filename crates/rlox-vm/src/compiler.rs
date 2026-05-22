@@ -1,4 +1,4 @@
-//! Chapter 25 — Closures.
+//! Chapter 27 — Classes and Instances.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -13,7 +13,8 @@
 //! scopes and stack-slot locals. Chapter 23 compiles structured
 //! control flow to raw forward and backward jumps. Chapter 24 adds
 //! first-class functions, calls, `return`, and native functions.
-//! Chapter 25 adds closures and upvalues for captured locals.
+//! Chapter 25 adds closures and upvalues for captured locals. Chapter
+//! 27 adds class declarations plus instance field get/set expressions.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -116,6 +117,8 @@ enum ParseFn {
     Variable,
     /// Parses a function call argument list.
     Call,
+    /// Parses instance property get/set expressions.
+    Dot,
     /// Parses short-circuiting logical `and`.
     And,
     /// Parses short-circuiting logical `or`.
@@ -195,6 +198,11 @@ const fn rule_for(t: TokenType) -> ParseRule {
         TokenType::LeftParen => ParseRule {
             prefix: ParseFn::Grouping,
             infix: ParseFn::Call,
+            precedence: Precedence::Call,
+        },
+        TokenType::Dot => ParseRule {
+            prefix: ParseFn::None,
+            infix: ParseFn::Dot,
             precedence: Precedence::Call,
         },
         TokenType::Minus => ParseRule {
@@ -538,6 +546,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             ParseFn::String => self.string(),
             ParseFn::Variable => self.variable(can_assign),
             ParseFn::Call => self.call(),
+            ParseFn::Dot => self.dot(can_assign),
             ParseFn::And => self.and(),
             ParseFn::Or => self.or(),
         }
@@ -546,7 +555,9 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     // ---- grammar productions --------------------------------------------
 
     fn declaration(&mut self) {
-        if self.match_token(TokenType::Fun) {
+        if self.match_token(TokenType::Class) {
+            self.class_declaration();
+        } else if self.match_token(TokenType::Fun) {
             self.fun_declaration();
         } else if self.match_token(TokenType::Var) {
             self.var_declaration();
@@ -557,6 +568,23 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         if self.panic_mode {
             self.synchronize();
         }
+    }
+
+    fn class_declaration(&mut self) {
+        self.consume(TokenType::Identifier, "Expect class name.");
+        if self.previous_token().ttype != TokenType::Identifier {
+            return;
+        }
+
+        let name = self.previous_token().clone();
+        let name_constant = self.identifier_constant(&name);
+        self.declare_variable(&name);
+
+        self.emit_op_with_byte(OpCode::Class, name_constant);
+        self.define_variable(name_constant);
+
+        self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
+        self.consume(TokenType::RightBrace, "Expect '}' after class body.");
     }
 
     fn statement(&mut self) {
@@ -1026,6 +1054,22 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     fn call(&mut self) {
         let arg_count = self.argument_list();
         self.emit_op_with_byte(OpCode::Call, arg_count);
+    }
+
+    fn dot(&mut self, can_assign: bool) {
+        self.consume(TokenType::Identifier, "Expect property name after '.'.");
+        if self.previous_token().ttype != TokenType::Identifier {
+            return;
+        }
+
+        let name = self.previous_token().clone();
+        let name = self.identifier_constant(&name);
+        if can_assign && self.match_token(TokenType::Equal) {
+            self.expression();
+            self.emit_op_with_byte(OpCode::SetProperty, name);
+        } else {
+            self.emit_op_with_byte(OpCode::GetProperty, name);
+        }
     }
 
     fn argument_list(&mut self) -> u8 {
@@ -2007,5 +2051,90 @@ mod tests {
             "#,
         );
         assert!(chunk.code.contains(&(OpCode::CloseUpvalue as u8)));
+    }
+
+    #[test]
+    fn class_declarations_print_classes_and_instances() {
+        let src = r"
+            class Brioche {}
+            print Brioche;
+            print Brioche();
+        ";
+        assert_eq!(run(src).0, "Brioche\nBrioche instance\n");
+    }
+
+    #[test]
+    fn instance_fields_can_be_set_and_read() {
+        let src = r#"
+            class Pair {}
+            var pair = Pair();
+            pair.first = 1;
+            pair.second = 2;
+            print pair.first + pair.second;
+            print pair.name = "lox";
+            print pair.name;
+        "#;
+        assert_eq!(run(src).0, "3\nlox\nlox\n");
+    }
+
+    #[test]
+    fn instance_fields_preserve_object_values_through_gc() {
+        let (chunk, mut heap) = compile_ok(
+            r#"
+            class Box {}
+            var box = Box();
+            box.payload = "live";
+            "dead";
+            "#,
+        );
+        let mut vm = Vm::new();
+        let mut out = Vec::new();
+        vm.interpret(&chunk, &mut heap, &mut out).expect("runs");
+
+        let stats = vm.collect_garbage(&mut heap);
+
+        assert!(stats.collected > 0);
+        let print_payload = compile("print box.payload;", &mut heap).expect("compile");
+        vm.interpret(&print_payload, &mut heap, &mut out)
+            .expect("runs after gc");
+        assert_eq!(String::from_utf8(out).unwrap(), "live\n");
+    }
+
+    #[test]
+    fn property_access_runtime_errors_match_clox() {
+        let VmError::Runtime { message, .. } = run_err(
+            r"
+            class Bagel {}
+            print Bagel.flavor;
+            ",
+        );
+        assert_eq!(message, "Only instances have properties.");
+
+        let VmError::Runtime { message, .. } = run_err(
+            r"
+            class Bagel {}
+            print Bagel().missing;
+            ",
+        );
+        assert_eq!(message, "Undefined property 'missing'.");
+
+        let VmError::Runtime { message, .. } = run_err("\"not instance\".field = 1;");
+        assert_eq!(message, "Only instances have fields.");
+    }
+
+    #[test]
+    fn compiler_emits_class_and_property_opcodes() {
+        let (chunk, _) = compile_ok(
+            r"
+            class Pair {}
+            var pair = Pair();
+            pair.first = 1;
+            print pair.first;
+            ",
+        );
+
+        assert!(chunk.code.contains(&(OpCode::Class as u8)));
+        assert!(chunk.code.contains(&(OpCode::SetProperty as u8)));
+        assert!(chunk.code.contains(&(OpCode::GetProperty as u8)));
     }
 }

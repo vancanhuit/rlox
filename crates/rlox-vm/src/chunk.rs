@@ -106,6 +106,12 @@ pub enum OpCode {
     /// `OP_CLOSE_UPVALUE` — close the captured local currently on top
     /// of the stack, then pop it.
     CloseUpvalue = 0x1d,
+    /// `OP_CLASS <idx>` — create a class object named by string constant `idx`.
+    Class = 0x1e,
+    /// `OP_GET_PROPERTY <idx>` — read an instance property by string name.
+    GetProperty = 0x1f,
+    /// `OP_SET_PROPERTY <idx>` — set an instance property by string name.
+    SetProperty = 0x20,
 }
 
 impl OpCode {
@@ -144,6 +150,9 @@ impl OpCode {
             0x1b => Some(Self::GetUpvalue),
             0x1c => Some(Self::SetUpvalue),
             0x1d => Some(Self::CloseUpvalue),
+            0x1e => Some(Self::Class),
+            0x1f => Some(Self::GetProperty),
+            0x20 => Some(Self::SetProperty),
             _ => None,
         }
     }
@@ -181,6 +190,9 @@ impl OpCode {
             Self::GetUpvalue => "OP_GET_UPVALUE",
             Self::SetUpvalue => "OP_SET_UPVALUE",
             Self::CloseUpvalue => "OP_CLOSE_UPVALUE",
+            Self::Class => "OP_CLASS",
+            Self::GetProperty => "OP_GET_PROPERTY",
+            Self::SetProperty => "OP_SET_PROPERTY",
         }
     }
 }
@@ -327,6 +339,9 @@ mod tests {
             OpCode::GetUpvalue,
             OpCode::SetUpvalue,
             OpCode::CloseUpvalue,
+            OpCode::Class,
+            OpCode::GetProperty,
+            OpCode::SetProperty,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -410,5 +425,8 @@ mod tests {
         assert_eq!(OpCode::GetUpvalue.mnemonic(), "OP_GET_UPVALUE");
         assert_eq!(OpCode::SetUpvalue.mnemonic(), "OP_SET_UPVALUE");
         assert_eq!(OpCode::CloseUpvalue.mnemonic(), "OP_CLOSE_UPVALUE");
+        assert_eq!(OpCode::Class.mnemonic(), "OP_CLASS");
+        assert_eq!(OpCode::GetProperty.mnemonic(), "OP_GET_PROPERTY");
+        assert_eq!(OpCode::SetProperty.mnemonic(), "OP_SET_PROPERTY");
     }
 }

@@ -230,3 +230,17 @@ fn run_to_with_gc_preserves_globals_and_closed_upvalues() {
     run_to_with("print reader(); print label;", &mut vm, &mut heap, &mut out).unwrap();
     assert_eq!(String::from_utf8(out).unwrap(), "closed\nglobal\n");
 }
+
+#[test]
+fn run_to_handles_classes_instances_and_fields() {
+    let src = r"
+        class Pair {}
+        var pair = Pair();
+        pair.first = 1;
+        pair.second = 2;
+        print Pair;
+        print pair;
+        print pair.first + pair.second;
+    ";
+    assert_eq!(run(src).unwrap(), "Pair\nPair instance\n3\n");
+}

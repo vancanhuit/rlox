@@ -23,10 +23,11 @@
 //! Today the heap stores strings plus callable objects:
 //! [`Obj::Function`] for compiled function prototypes, [`Obj::Closure`]
 //! for runtime function values, [`Obj::Upvalue`] for captured locals,
-//! and [`Obj::Native`] for built-ins such as `clock`. Chapter 27
-//! (classes) and chapter 28 (instances) will contribute new variants
-//! here.
+//! [`Obj::Native`] for built-ins such as `clock`, [`Obj::Class`] for
+//! user-defined classes, and [`Obj::Instance`] for field-bearing class
+//! instances. Methods and inheritance arrive in later chapters.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use crate::chunk::Chunk;
@@ -170,6 +171,42 @@ impl fmt::Debug for NativeFunction {
     }
 }
 
+/// A user-defined Lox class. Chapter 27 classes are callable factories
+/// for instances; methods arrive in chapter 28.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Class {
+    /// Name used for display and diagnostics.
+    pub name: String,
+}
+
+impl Class {
+    /// Create a class named `name`.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// A runtime instance of a Lox [`Class`].
+#[derive(Debug, Clone)]
+pub struct Instance {
+    /// Class this instance was created from.
+    pub class: Handle,
+    /// Dynamically added fields, keyed by property name.
+    pub fields: HashMap<String, Value>,
+}
+
+impl Instance {
+    /// Create an empty instance of `class`.
+    #[must_use]
+    pub fn new(class: Handle) -> Self {
+        Self {
+            class,
+            fields: HashMap::new(),
+        }
+    }
+}
+
 /// A heap-allocated VM object.
 #[derive(Debug, Clone)]
 pub enum Obj {
@@ -183,6 +220,10 @@ pub enum Obj {
     Upvalue(Upvalue),
     /// A native Rust function exposed to Lox.
     Native(NativeFunction),
+    /// A user-defined class object.
+    Class(Class),
+    /// A runtime instance with dynamically assigned fields.
+    Instance(Instance),
 }
 
 /// Roots that seed one garbage-collection run.
@@ -308,6 +349,16 @@ impl Heap {
         self.alloc(Obj::Native(native))
     }
 
+    /// Allocate an [`Obj::Class`] and return its handle.
+    pub fn alloc_class(&mut self, class: Class) -> Handle {
+        self.alloc(Obj::Class(class))
+    }
+
+    /// Allocate an [`Obj::Instance`] and return its handle.
+    pub fn alloc_instance(&mut self, instance: Instance) -> Handle {
+        self.alloc(Obj::Instance(instance))
+    }
+
     fn alloc(&mut self, obj: Obj) -> Handle {
         self.live += 1;
 
@@ -358,7 +409,12 @@ impl Heap {
     pub fn as_str(&self, h: Handle) -> Option<&str> {
         match self.get(h) {
             Obj::Str(s) => Some(s),
-            Obj::Function(_) | Obj::Closure(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+            Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -367,7 +423,12 @@ impl Heap {
     pub fn as_function(&self, h: Handle) -> Option<&Function> {
         match self.get(h) {
             Obj::Function(function) => Some(function),
-            Obj::Str(_) | Obj::Closure(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+            Obj::Str(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -376,7 +437,12 @@ impl Heap {
     pub fn as_closure(&self, h: Handle) -> Option<&Closure> {
         match self.get(h) {
             Obj::Closure(closure) => Some(closure),
-            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -385,7 +451,12 @@ impl Heap {
     pub fn as_closure_mut(&mut self, h: Handle) -> Option<&mut Closure> {
         match self.get_mut(h) {
             Obj::Closure(closure) => Some(closure),
-            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Native(_) => None,
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -394,7 +465,12 @@ impl Heap {
     pub fn as_upvalue(&self, h: Handle) -> Option<Upvalue> {
         match self.get(h) {
             Obj::Upvalue(upvalue) => Some(*upvalue),
-            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Native(_) => None,
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -403,7 +479,12 @@ impl Heap {
     pub fn as_upvalue_mut(&mut self, h: Handle) -> Option<&mut Upvalue> {
         match self.get_mut(h) {
             Obj::Upvalue(upvalue) => Some(upvalue),
-            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Native(_) => None,
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
         }
     }
 
@@ -412,7 +493,54 @@ impl Heap {
     pub fn as_native(&self, h: Handle) -> Option<NativeFunction> {
         match self.get(h) {
             Obj::Native(native) => Some(*native),
-            Obj::Str(_) | Obj::Function(_) | Obj::Closure(_) | Obj::Upvalue(_) => None,
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
+        }
+    }
+
+    /// Convenience accessor for class objects.
+    #[must_use]
+    pub fn as_class(&self, h: Handle) -> Option<&Class> {
+        match self.get(h) {
+            Obj::Class(class) => Some(class),
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Instance(_) => None,
+        }
+    }
+
+    /// Convenience accessor for instance objects.
+    #[must_use]
+    pub fn as_instance(&self, h: Handle) -> Option<&Instance> {
+        match self.get(h) {
+            Obj::Instance(instance) => Some(instance),
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_) => None,
+        }
+    }
+
+    /// Mutable convenience accessor for instance objects.
+    #[must_use]
+    pub fn as_instance_mut(&mut self, h: Handle) -> Option<&mut Instance> {
+        match self.get_mut(h) {
+            Obj::Instance(instance) => Some(instance),
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_) => None,
         }
     }
 
@@ -507,7 +635,7 @@ impl Heap {
 
     fn blacken_object(&mut self, handle: Handle) {
         let (values, handles) = match self.get(handle) {
-            Obj::Str(_) | Obj::Native(_) => (Vec::new(), Vec::new()),
+            Obj::Str(_) | Obj::Native(_) | Obj::Class(_) => (Vec::new(), Vec::new()),
             Obj::Function(function) => (function.chunk.constants.clone(), Vec::new()),
             Obj::Closure(closure) => {
                 let mut handles = Vec::with_capacity(1 + closure.upvalues.len());
@@ -519,6 +647,10 @@ impl Heap {
                 UpvalueLocation::Open(_) => (Vec::new(), Vec::new()),
                 UpvalueLocation::Closed(value) => (vec![value], Vec::new()),
             },
+            Obj::Instance(instance) => (
+                instance.fields.values().copied().collect(),
+                vec![instance.class],
+            ),
         };
 
         for value in values {
@@ -606,6 +738,8 @@ mod tests {
         let function = h.alloc_function(Function::new(Some("f".to_string()), 2, Chunk::new()));
         let upvalue = h.alloc_upvalue(Upvalue::open(3));
         let closure = h.alloc_closure(Closure::new(function, vec![upvalue]));
+        let class = h.alloc_class(Class::new("Bagel"));
+        let instance = h.alloc_instance(Instance::new(class));
         let native = h.alloc_native(NativeFunction {
             name: "clock",
             arity: 0,
@@ -618,9 +752,12 @@ mod tests {
             h.as_upvalue(upvalue).unwrap().location,
             UpvalueLocation::Open(3)
         );
+        assert_eq!(h.as_class(class).unwrap().name, "Bagel");
+        assert_eq!(h.as_instance(instance).unwrap().class, class);
         assert_eq!(h.as_native(native).unwrap().name, "clock");
         assert_eq!(h.as_str(function), None);
         assert!(h.as_function(native).is_none());
+        assert!(h.as_class(instance).is_none());
     }
 
     #[test]
@@ -698,6 +835,31 @@ mod tests {
         assert_eq!(stats.before, 2);
         assert_eq!(stats.after, 1);
         assert_eq!(h.as_str(live), Some("literal"));
+    }
+
+    #[test]
+    fn collect_garbage_traces_instance_class_and_fields() {
+        let mut h = Heap::new();
+        let class = h.alloc_class(Class::new("Box"));
+        let value = h.alloc_string("field");
+        let mut instance = Instance::new(class);
+        instance
+            .fields
+            .insert("payload".to_string(), Value::Obj(value));
+        let instance = h.alloc_instance(instance);
+        h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots {
+            values: &[Value::Obj(instance)],
+            handles: &[],
+            chunks: &[],
+        });
+
+        assert_eq!(stats.before, 4);
+        assert_eq!(stats.after, 3);
+        assert_eq!(h.as_class(class).unwrap().name, "Box");
+        assert_eq!(h.as_str(value), Some("field"));
+        assert!(h.as_instance(instance).is_some());
     }
 
     #[test]

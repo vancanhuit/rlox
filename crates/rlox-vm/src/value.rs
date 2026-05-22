@@ -6,7 +6,8 @@
 //! - [`Value::Nil`] — the singleton nil.
 //! - [`Value::Bool`] — `true` or `false`.
 //! - [`Value::Number`] — a 64-bit IEEE-754 float.
-//! - [`Value::Obj`] — a heap handle for strings and callable objects.
+//! - [`Value::Obj`] — a heap handle for strings, callable objects,
+//!   classes, and instances.
 //!
 //! Equality follows clox/jlox semantics:
 //!
@@ -39,8 +40,8 @@ pub enum Value {
     Bool(bool),
     /// A 64-bit IEEE-754 floating-point number — the only Lox numeric type.
     Number(f64),
-    /// A heap-allocated object (strings, callables, captured upvalues;
-    /// later chapters add classes and instances).
+    /// A heap-allocated object (strings, callables, captured upvalues,
+    /// classes, and instances).
     Obj(Handle),
 }
 
@@ -105,8 +106,9 @@ impl Value {
 }
 
 /// Heap-aware [`Display`] adapter. Strings render verbatim (matching
-/// clox's `printValue`/`printObject` for `OBJ_STRING`), other future
-/// object kinds will pick their own rendering.
+/// clox's `printValue`/`printObject` for `OBJ_STRING`), callable values
+/// use clox-style angle-bracket names, and classes/instances render by
+/// class name.
 pub struct ValueDisplay<'a> {
     value: Value,
     heap: &'a Heap,
@@ -133,6 +135,14 @@ impl fmt::Display for ValueDisplay<'_> {
                 }
                 Obj::Upvalue(_) => f.write_str("<upvalue>"),
                 Obj::Native(native) => write!(f, "<native fn {}>", native.name),
+                Obj::Class(class) => f.write_str(&class.name),
+                Obj::Instance(instance) => {
+                    let class = self
+                        .heap
+                        .as_class(instance.class)
+                        .expect("instance references non-class object");
+                    write!(f, "{} instance", class.name)
+                }
             },
             // Inline variants delegate to the bare Display impl below.
             other => write!(f, "{other}"),
@@ -230,5 +240,18 @@ mod tests {
         assert!(!values_equal(Value::Obj(a), Value::Obj(c), &heap));
         // Mixed types remain unequal without raising.
         assert!(!values_equal(Value::Obj(a), Value::Number(1.0), &heap));
+    }
+
+    #[test]
+    fn display_with_heap_renders_classes_and_instances() {
+        let mut heap = Heap::new();
+        let class = heap.alloc_class(crate::heap::Class::new("Bagel"));
+        let instance = heap.alloc_instance(crate::heap::Instance::new(class));
+
+        assert_eq!(Value::Obj(class).display(&heap).to_string(), "Bagel");
+        assert_eq!(
+            Value::Obj(instance).display(&heap).to_string(),
+            "Bagel instance"
+        );
     }
 }

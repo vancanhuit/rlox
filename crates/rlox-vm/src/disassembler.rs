@@ -101,8 +101,14 @@ pub fn disassemble_instruction_with_heap(
     match OpCode::from_byte(byte) {
         // Constant + operand pair: 2 bytes, emits the constant value.
         Some(
-            op @ (OpCode::Constant | OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal),
-        ) => constant_instruction(op, chunk, offset, out),
+            op @ (OpCode::Constant
+            | OpCode::DefineGlobal
+            | OpCode::GetGlobal
+            | OpCode::SetGlobal
+            | OpCode::Class
+            | OpCode::GetProperty
+            | OpCode::SetProperty),
+        ) => constant_instruction(op, chunk, offset, heap, out),
         Some(OpCode::Closure) => closure_instruction(chunk, offset, heap, out),
         // Byte operand: 2 bytes, prints a raw stack slot or argument count.
         Some(
@@ -182,13 +188,18 @@ fn constant_instruction(
     op: OpCode,
     chunk: &Chunk,
     offset: usize,
+    heap: Option<&Heap>,
     out: &mut dyn Write,
 ) -> Result<usize, fmt::Error> {
     let idx = chunk.code[offset + 1];
     let mnemonic = op.mnemonic();
     // clox: `printf("%-16s %4d '", name, constant);` plus `printValue`.
-    let value = &chunk.constants[idx as usize];
-    writeln!(out, "{mnemonic:<16} {idx:4} '{value}'")?;
+    let value = chunk.constants[idx as usize];
+    if let Some(heap) = heap {
+        writeln!(out, "{mnemonic:<16} {idx:4} '{}'", value.display(heap))?;
+    } else {
+        writeln!(out, "{mnemonic:<16} {idx:4} '{value}'")?;
+    }
     Ok(offset + 2)
 }
 
@@ -316,6 +327,33 @@ mod tests {
 0000    1 OP_GET_LOCAL        3
 0002    2 OP_SET_LOCAL        4
 0004    3 OP_CALL             2
+";
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn disassembles_class_and_property_name_operands() {
+        let mut heap = Heap::new();
+        let name = heap.alloc_string("Bagel");
+        let field = heap.alloc_string("flavor");
+        let mut chunk = Chunk::new();
+        let name_idx = chunk.add_constant(Value::Obj(name));
+        let field_idx = chunk.add_constant(Value::Obj(field));
+        chunk.write_op(OpCode::Class, 1);
+        chunk.write_byte(name_idx, 1);
+        chunk.write_op(OpCode::GetProperty, 2);
+        chunk.write_byte(field_idx, 2);
+        chunk.write_op(OpCode::SetProperty, 3);
+        chunk.write_byte(field_idx, 3);
+
+        let mut out = String::new();
+        disassemble_chunk_with_heap(&chunk, "properties", Some(&heap), &mut out).unwrap();
+
+        let expected = "\
+== properties ==
+0000    1 OP_CLASS            0 'Bagel'
+0002    2 OP_GET_PROPERTY     1 'flavor'
+0004    3 OP_SET_PROPERTY     1 'flavor'
 ";
         assert_eq!(out, expected);
     }
