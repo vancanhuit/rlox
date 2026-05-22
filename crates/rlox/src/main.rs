@@ -100,7 +100,7 @@ fn run_file(path: &Path) -> ExitCode {
 
 /// REPL — the tree-walk variant carries a long-lived `Interpreter`
 /// across prompts so chapter-8-and-up state (variables, functions,
-/// classes) survives between lines. The VM at chapter 17 is
+/// classes) survives between lines. The VM through chapter 19 is
 /// stateless (no globals yet), so the `vm` build's REPL just runs
 /// `run_to` once per line; chapter 21 will introduce a persistent
 /// VM state and a richer REPL surface.
@@ -174,8 +174,8 @@ fn repl_step_tree(
 }
 
 /// REPL for the bytecode-VM build. Each line is compiled into its own
-/// chunk and executed; there's no carry-over state until chapter 21
-/// introduces globals.
+/// expression chunk and executed; there's no carry-over state until
+/// chapter 21 introduces globals.
 #[cfg(feature = "vm")]
 fn run_prompt() -> ExitCode {
     let stdin = io::stdin();

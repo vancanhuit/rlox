@@ -22,10 +22,9 @@ use crate::value::Value;
 
 /// Bytecode operations recognised by the VM.
 ///
-/// `#[repr(u8)]` makes the discriminant the on-disk encoding. The
-/// numeric values are deliberately stable: `OP_RETURN` is opcode `0` so
-/// a freshly-zeroed `Chunk::code` would default to "halt", matching
-/// clox's defensive layout.
+/// `#[repr(u8)]` makes the discriminant the bytecode encoding. The
+/// numeric values are deliberately stable so compiled chunks remain
+/// readable across the VM's chapter-by-chapter growth.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpCode {
