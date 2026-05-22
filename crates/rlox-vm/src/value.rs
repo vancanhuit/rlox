@@ -17,8 +17,9 @@
 //!   `NaN != NaN`. The reference implementation agrees.
 //! - `Obj(a) == Obj(b)` requires dereferencing through the heap and is
 //!   exposed by [`values_equal`] rather than [`PartialEq`] because it
-//!   needs the heap as context. This keeps string equality independent
-//!   of whether equal strings share an allocation.
+//!   needs the heap as context. Interned strings usually compare by
+//!   handle identity, while the content fallback keeps the helper
+//!   robust if a future allocation path bypasses interning.
 //! - Mixed-type comparisons are `false` rather than a runtime error;
 //!   the runtime error path is reserved for ordering (`<`, `>`) and
 //!   arithmetic, which require both operands to be numbers.
@@ -63,10 +64,9 @@ impl PartialEq for Value {
 }
 
 /// Polymorphic equality that dereferences object handles through
-/// `heap` so two distinct allocations of `"abc"` compare equal.
-///
-/// If a future interning pass guarantees one handle per string content,
-/// this helper can shrink to `a == b`.
+/// `heap`. Interned strings normally hit the identical-handle fast path;
+/// the string-content fallback preserves Lox equality if callers ever
+/// compare strings produced by a non-interning allocation path.
 #[must_use]
 pub fn values_equal(a: Value, b: Value, heap: &Heap) -> bool {
     match (a, b) {
@@ -248,8 +248,9 @@ mod tests {
         let a = heap.alloc_string("abc");
         let b = heap.alloc_string("abc");
         let c = heap.alloc_string("xyz");
-        // Distinct allocations of the same content are equal because
-        // VM equality dereferences string handles through the heap.
+        // Interned equal strings share a handle, so VM equality uses the
+        // same fast path as clox's pointer comparison.
+        assert_eq!(a, b);
         assert!(values_equal(Value::Obj(a), Value::Obj(b), &heap));
         assert!(!values_equal(Value::Obj(a), Value::Obj(c), &heap));
         // Mixed types remain unequal without raising.

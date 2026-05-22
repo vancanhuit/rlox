@@ -10,10 +10,9 @@
 //! - **Allocation** stores the object in either a reclaimed slot or a
 //!   fresh slot and returns its handle.
 //! - **Lookup** is `O(1)` via `Heap::get(handle)`.
-//! - **Equality** can dereference through the heap and compare contents
-//!   ([`values_equal`](crate::value::values_equal)). This keeps string
-//!   equality correct without requiring the custom interning table from
-//!   clox chapter 20.
+//! - **String interning** reuses one live [`Obj::Str`] handle per string
+//!   content, giving equality the same cheap identity fast path that
+//!   clox gets from interned strings without exposing raw pointers.
 //! - **Garbage collection** is precise mark-sweep: roots are marked,
 //!   object references are traced through a gray stack, and unmarked
 //!   slots are swept into a free list. [`Handle`] includes a generation
@@ -27,7 +26,9 @@
 //! user-defined classes, [`Obj::Instance`] for field-bearing class
 //! instances, and [`Obj::BoundMethod`] for methods captured from a
 //! receiver. Chapter 29 inheritance copies superclass methods into
-//! subclasses and captures superclass locals for `super`.
+//! subclasses and captures superclass locals for `super`; chapter 30
+//! keeps NaN-boxing skipped under `unsafe_code = "forbid"` and adds
+//! safe string interning as the VM's representation optimization.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -324,6 +325,7 @@ impl HeapSlot {
 pub struct Heap {
     slots: Vec<HeapSlot>,
     free: Vec<u32>,
+    strings: HashMap<String, Handle>,
     gray_stack: Vec<Handle>,
     live: usize,
     next_gc: usize,
@@ -334,6 +336,7 @@ impl Default for Heap {
         Self {
             slots: Vec::new(),
             free: Vec::new(),
+            strings: HashMap::new(),
             gray_stack: Vec::new(),
             live: 0,
             next_gc: INITIAL_GC_THRESHOLD,
@@ -348,11 +351,22 @@ impl Heap {
         Self::default()
     }
 
-    /// Allocate an [`Obj::Str`] containing `s` and return its handle.
-    /// Strings are stored verbatim; equal contents may have distinct
-    /// handles.
+    /// Allocate or reuse an interned [`Obj::Str`] containing `s`.
+    ///
+    /// The intern table is weak metadata: returning an existing live
+    /// handle is an optimization, but unreachable strings are still
+    /// swept normally and removed from the table during collection.
     pub fn alloc_string(&mut self, s: impl Into<String>) -> Handle {
-        self.alloc(Obj::Str(s.into()))
+        let s = s.into();
+        if let Some(handle) = self.strings.get(&s).copied()
+            && self.handle_is_live(handle)
+        {
+            return handle;
+        }
+
+        let handle = self.alloc(Obj::Str(s.clone()));
+        self.strings.insert(s, handle);
+        handle
     }
 
     /// Allocate an [`Obj::Function`] and return its handle.
@@ -426,7 +440,7 @@ impl Heap {
 
     /// Mutably borrow the object referenced by `h`.
     #[must_use]
-    pub fn get_mut(&mut self, h: Handle) -> &mut Obj {
+    fn get_mut(&mut self, h: Handle) -> &mut Obj {
         let index = self.valid_slot_index(h);
         self.slots[index]
             .obj
@@ -737,6 +751,8 @@ impl Heap {
     }
 
     fn sweep(&mut self) {
+        let mut swept_strings = Vec::new();
+
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if slot.obj.is_none() {
                 continue;
@@ -747,6 +763,16 @@ impl Heap {
                 continue;
             }
 
+            if let Some(Obj::Str(s)) = &slot.obj {
+                swept_strings.push((
+                    s.clone(),
+                    Handle {
+                        index: u32::try_from(index).expect("heap slot index exceeded u32 capacity"),
+                        generation: slot.generation,
+                    },
+                ));
+            }
+
             slot.obj = None;
             slot.generation = slot
                 .generation
@@ -755,6 +781,12 @@ impl Heap {
             self.live -= 1;
             self.free
                 .push(u32::try_from(index).expect("heap slot index exceeded u32 capacity"));
+        }
+
+        for (s, handle) in swept_strings {
+            if self.strings.get(&s).copied() == Some(handle) {
+                self.strings.remove(&s);
+            }
         }
     }
 
@@ -769,6 +801,12 @@ impl Heap {
         );
         handle.index as usize
     }
+
+    fn handle_is_live(&self, handle: Handle) -> bool {
+        self.slots
+            .get(handle.index as usize)
+            .is_some_and(|slot| slot.generation == handle.generation && slot.obj.is_some())
+    }
 }
 
 #[cfg(test)]
@@ -776,12 +814,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alloc_string_returns_distinct_handles_per_call() {
+    fn alloc_string_interns_equal_contents() {
         let mut h = Heap::new();
         let a = h.alloc_string("foo");
         let b = h.alloc_string("foo");
-        // No interning yet, so equal strings get distinct handles.
-        assert_ne!(a, b);
+        assert_eq!(a, b);
         assert_eq!(h.as_str(a), Some("foo"));
         assert_eq!(h.as_str(b), Some("foo"));
     }
@@ -866,6 +903,22 @@ mod tests {
         assert_ne!(dead, reused);
         assert_eq!(reused.to_string(), dead.to_string());
         assert_eq!(h.as_str(reused), Some("reused"));
+    }
+
+    #[test]
+    fn collect_garbage_removes_swept_strings_from_intern_table() {
+        let mut h = Heap::new();
+        let dead = h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots::empty());
+
+        assert_eq!(stats.collected, 1);
+        assert_eq!(h.len(), 0);
+
+        let replacement = h.alloc_string("dead");
+        assert_ne!(dead, replacement);
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.as_str(replacement), Some("dead"));
     }
 
     #[test]

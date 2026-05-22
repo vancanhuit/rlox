@@ -23,6 +23,8 @@
 //! - chapter 27: classes, instances, and dynamic fields.
 //! - chapter 28: methods, `this`, initializers, and optimized invokes.
 //! - chapter 29: superclasses, inherited methods, and `super`.
+//! - chapter 30: safe string interning as the VM's optimization pass;
+//!   NaN-boxing stays skipped under the workspace `unsafe_code` ban.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
@@ -32,7 +34,7 @@
 //! program made of top-level statements, global/local declarations,
 //! structured control flow, first-class functions, closures, classes,
 //! instances, dynamic fields, methods, initializers, superclasses,
-//! `super`, and VM-managed object reclamation.
+//! `super`, VM-managed object reclamation, and interned strings.
 
 pub mod chunk;
 pub mod compiler;
