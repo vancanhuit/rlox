@@ -118,6 +118,15 @@ pub enum OpCode {
     /// `OP_INVOKE <idx> <arg_count>` — optimized property lookup plus
     /// call for `receiver.method(args...)`.
     Invoke = 0x22,
+    /// `OP_INHERIT` — copy superclass methods into the subclass method
+    /// table. The superclass and subclass are taken from the stack.
+    Inherit = 0x23,
+    /// `OP_GET_SUPER <idx>` — bind a superclass method named by string
+    /// constant `idx` to the receiver already on the stack.
+    GetSuper = 0x24,
+    /// `OP_SUPER_INVOKE <idx> <arg_count>` — optimized superclass
+    /// method lookup plus call for `super.method(args...)`.
+    SuperInvoke = 0x25,
 }
 
 impl OpCode {
@@ -161,6 +170,9 @@ impl OpCode {
             0x20 => Some(Self::SetProperty),
             0x21 => Some(Self::Method),
             0x22 => Some(Self::Invoke),
+            0x23 => Some(Self::Inherit),
+            0x24 => Some(Self::GetSuper),
+            0x25 => Some(Self::SuperInvoke),
             _ => None,
         }
     }
@@ -203,6 +215,9 @@ impl OpCode {
             Self::SetProperty => "OP_SET_PROPERTY",
             Self::Method => "OP_METHOD",
             Self::Invoke => "OP_INVOKE",
+            Self::Inherit => "OP_INHERIT",
+            Self::GetSuper => "OP_GET_SUPER",
+            Self::SuperInvoke => "OP_SUPER_INVOKE",
         }
     }
 }
@@ -354,6 +369,9 @@ mod tests {
             OpCode::SetProperty,
             OpCode::Method,
             OpCode::Invoke,
+            OpCode::Inherit,
+            OpCode::GetSuper,
+            OpCode::SuperInvoke,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -442,5 +460,8 @@ mod tests {
         assert_eq!(OpCode::SetProperty.mnemonic(), "OP_SET_PROPERTY");
         assert_eq!(OpCode::Method.mnemonic(), "OP_METHOD");
         assert_eq!(OpCode::Invoke.mnemonic(), "OP_INVOKE");
+        assert_eq!(OpCode::Inherit.mnemonic(), "OP_INHERIT");
+        assert_eq!(OpCode::GetSuper.mnemonic(), "OP_GET_SUPER");
+        assert_eq!(OpCode::SuperInvoke.mnemonic(), "OP_SUPER_INVOKE");
     }
 }

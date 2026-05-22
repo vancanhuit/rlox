@@ -26,7 +26,8 @@
 //! [`Obj::Native`] for built-ins such as `clock`, [`Obj::Class`] for
 //! user-defined classes, [`Obj::Instance`] for field-bearing class
 //! instances, and [`Obj::BoundMethod`] for methods captured from a
-//! receiver. Inheritance arrives in a later chapter.
+//! receiver. Chapter 29 inheritance copies superclass methods into
+//! subclasses and captures superclass locals for `super`.
 
 use std::collections::HashMap;
 use std::fmt;

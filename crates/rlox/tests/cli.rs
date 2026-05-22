@@ -99,10 +99,10 @@ fn binary_exits_70_on_runtime_error() {
 
 // ---- vm-only smoke tests ----
 //
-// Chapter 28 gives the VM top-level statements, globals, block-scoped
+// Chapter 29 gives the VM top-level statements, globals, block-scoped
 // locals, structured control flow, first-class functions, the native
 // `clock`, closures, classes, instances, dynamic fields, methods, and
-// initializers.
+// initializers, plus superclasses and `super`.
 
 #[cfg(feature = "vm")]
 #[test]
@@ -316,4 +316,38 @@ greet();"#,
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi, lox\n");
+}
+
+#[cfg(feature = "vm")]
+#[test]
+fn vm_binary_runs_superclass_program() {
+    let path = write_lox(
+        "vm_superclasses",
+        r#"class Doughnut {
+  cook() {
+    print "fry";
+    this.finish("sprinkles");
+  }
+
+  finish(ingredient) {
+    print "finish " + ingredient;
+  }
+}
+
+class Cruller < Doughnut {
+  finish(ingredient) {
+    super.finish("icing");
+  }
+}
+
+Cruller().cook();"#,
+    );
+    let out = Command::new(rlox_bin()).arg(&path).output().unwrap();
+    fs::remove_file(&path).ok();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "fry\nfinish icing\n");
 }
