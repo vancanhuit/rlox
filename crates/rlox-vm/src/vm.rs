@@ -33,8 +33,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::chunk::{Chunk, OpCode};
 use crate::disassembler::disassemble_instruction_with_heap;
 use crate::heap::{
-    Class, Closure, GcRoots, GcStats, Handle, Heap, Instance, NativeFunction, Obj, Upvalue,
-    UpvalueLocation,
+    BoundMethod, Class, Closure, GcRoots, GcStats, Handle, Heap, Instance, NativeFunction, Obj,
+    Upvalue, UpvalueLocation,
 };
 use crate::value::{Value, values_equal};
 
@@ -279,8 +279,9 @@ impl Vm {
             }
             OpCode::GetGlobal => self.get_global(chunk, heap, frame_index, line)?,
             OpCode::SetGlobal => self.set_global(chunk, heap, frame_index, line)?,
-            OpCode::GetProperty => self.get_property(chunk, heap, frame_index, line)?,
+            OpCode::GetProperty => self.get_property_op(chunk, heap, frame_index, line)?,
             OpCode::SetProperty => self.set_property(chunk, heap, frame_index, line)?,
+            OpCode::Method => self.method(chunk, heap, frame_index),
             OpCode::GetLocal => {
                 let slot = usize::from(self.read_byte(chunk, heap, frame_index));
                 let absolute = self.frames[frame_index].slot_start + slot;
@@ -308,11 +309,9 @@ impl Vm {
                 self.frames[frame_index].ip -= jump;
             }
             OpCode::Call => {
-                let arg_count = self.read_byte(chunk, heap, frame_index);
-                let callee = self.peek(usize::from(arg_count));
-                self.call_value(callee, arg_count, heap, line)?;
-                self.maybe_collect(heap, chunk);
+                self.call_op(chunk, heap, frame_index, line)?;
             }
+            OpCode::Invoke => self.invoke_op(chunk, heap, frame_index, line)?,
             OpCode::Nil => self.push(Value::Nil),
             OpCode::True => self.push(Value::Bool(true)),
             OpCode::False => self.push(Value::Bool(false)),
@@ -356,6 +355,46 @@ impl Vm {
 
     fn peek(&self, distance: usize) -> Value {
         self.stack[self.stack.len() - 1 - distance]
+    }
+
+    fn call_op(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let arg_count = self.read_byte(chunk, heap, frame_index);
+        let callee = self.peek(usize::from(arg_count));
+        self.call_value(callee, arg_count, heap, line)?;
+        self.maybe_collect(heap, chunk);
+        Ok(())
+    }
+
+    fn get_property_op(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        self.get_property(chunk, heap, frame_index, line)?;
+        self.maybe_collect(heap, chunk);
+        Ok(())
+    }
+
+    fn invoke_op(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let arg_count = self.read_byte(chunk, heap, frame_index);
+        self.invoke(&name, arg_count, heap, line)?;
+        self.maybe_collect(heap, chunk);
+        Ok(())
     }
 
     fn closure(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
@@ -414,22 +453,19 @@ impl Vm {
         }
 
         let name = self.read_string_constant(chunk, heap, frame_index);
-        let value = heap
-            .as_instance(instance)
-            .expect("checked instance object above")
-            .fields
-            .get(&name)
-            .copied();
-        let Some(value) = value else {
-            return Err(Self::runtime_error_at(
-                line,
-                &format!("Undefined property '{name}'."),
-            ));
+        let class = {
+            let instance = heap
+                .as_instance(instance)
+                .expect("checked instance object above");
+            if let Some(value) = instance.fields.get(&name).copied() {
+                self.pop();
+                self.push(value);
+                return Ok(());
+            }
+            instance.class
         };
 
-        self.pop();
-        self.push(value);
-        Ok(())
+        self.bind_method(class, &name, Value::Obj(instance), heap, line)
     }
 
     fn set_property(
@@ -457,6 +493,21 @@ impl Vm {
         self.pop();
         self.push(value);
         Ok(())
+    }
+
+    fn method(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let Value::Obj(method) = self.peek(0) else {
+            panic!("OP_METHOD stack top does not reference a method closure");
+        };
+        let Value::Obj(class) = self.peek(1) else {
+            panic!("OP_METHOD stack receiver does not reference a class");
+        };
+        heap.as_class_mut(class)
+            .expect("OP_METHOD target references a non-class object")
+            .methods
+            .insert(name, method);
+        self.pop();
     }
 
     fn get_upvalue(&mut self, chunk: &Chunk, heap: &Heap, frame_index: usize) {
@@ -713,45 +764,163 @@ impl Vm {
             ));
         };
 
-        match heap.get(handle) {
-            Obj::Class(_) => {
-                if arg_count != 0 {
-                    return Err(Self::arity_error(line, 0, arg_count));
-                }
-                let instance = heap.alloc_instance(Instance::new(handle));
-                let callee_index = self.stack.len() - usize::from(arg_count) - 1;
-                self.stack.truncate(callee_index);
-                self.push(Value::Obj(instance));
-                Ok(())
-            }
-            Obj::Closure(closure) => {
-                let function = heap
-                    .as_function(closure.function)
-                    .expect("closure references a non-function object");
-                if arg_count != function.arity {
-                    return Err(Self::arity_error(line, function.arity, arg_count));
-                }
-                self.frames.push(CallFrame {
-                    function: FrameFunction::Closure(handle),
-                    ip: 0,
-                    slot_start: self.stack.len() - usize::from(arg_count) - 1,
-                });
-                Ok(())
-            }
-            Obj::Native(native) => {
-                if arg_count != native.arity {
-                    return Err(Self::arity_error(line, native.arity, arg_count));
-                }
-                let callee_index = self.stack.len() - usize::from(arg_count) - 1;
-                let result = (native.function)(&self.stack[callee_index + 1..]);
-                self.stack.truncate(callee_index);
-                self.push(result);
-                Ok(())
-            }
-            Obj::Str(_) | Obj::Function(_) | Obj::Upvalue(_) | Obj::Instance(_) => Err(
-                Self::runtime_error_at(line, "Can only call functions and classes."),
-            ),
+        if heap.as_class(handle).is_some() {
+            return self.call_class(handle, arg_count, heap, line);
         }
+        if let Some(bound_method) = heap.as_bound_method(handle) {
+            let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+            self.stack[callee_index] = bound_method.receiver;
+            return self.call_closure(bound_method.method, arg_count, heap, line);
+        }
+        if heap.as_closure(handle).is_some() {
+            return self.call_closure(handle, arg_count, heap, line);
+        }
+        if let Some(native) = heap.as_native(handle) {
+            return self.call_native(native, arg_count, line);
+        }
+
+        Err(Self::runtime_error_at(
+            line,
+            "Can only call functions and classes.",
+        ))
+    }
+
+    fn call_class(
+        &mut self,
+        class: Handle,
+        arg_count: u8,
+        heap: &mut Heap,
+        line: usize,
+    ) -> VmResult<()> {
+        let instance = heap.alloc_instance(Instance::new(class));
+        let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+        self.stack[callee_index] = Value::Obj(instance);
+
+        if let Some(initializer) = heap
+            .as_class(class)
+            .expect("checked class object above")
+            .methods
+            .get("init")
+            .copied()
+        {
+            return self.call_closure(initializer, arg_count, heap, line);
+        }
+
+        if arg_count != 0 {
+            return Err(Self::arity_error(line, 0, arg_count));
+        }
+        Ok(())
+    }
+
+    fn call_closure(
+        &mut self,
+        closure: Handle,
+        arg_count: u8,
+        heap: &Heap,
+        line: usize,
+    ) -> VmResult<()> {
+        let function = heap
+            .as_function(
+                heap.as_closure(closure)
+                    .expect("call target references a non-closure object")
+                    .function,
+            )
+            .expect("closure references a non-function object");
+        if arg_count != function.arity {
+            return Err(Self::arity_error(line, function.arity, arg_count));
+        }
+        self.frames.push(CallFrame {
+            function: FrameFunction::Closure(closure),
+            ip: 0,
+            slot_start: self.stack.len() - usize::from(arg_count) - 1,
+        });
+        Ok(())
+    }
+
+    fn call_native(&mut self, native: NativeFunction, arg_count: u8, line: usize) -> VmResult<()> {
+        if arg_count != native.arity {
+            return Err(Self::arity_error(line, native.arity, arg_count));
+        }
+        let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+        let result = (native.function)(&self.stack[callee_index + 1..]);
+        self.stack.truncate(callee_index);
+        self.push(result);
+        Ok(())
+    }
+
+    fn bind_method(
+        &mut self,
+        class: Handle,
+        name: &str,
+        receiver: Value,
+        heap: &mut Heap,
+        line: usize,
+    ) -> VmResult<()> {
+        let Some(method) = heap
+            .as_class(class)
+            .expect("instance references a non-class object")
+            .methods
+            .get(name)
+            .copied()
+        else {
+            return Err(Self::runtime_error_at(
+                line,
+                &format!("Undefined property '{name}'."),
+            ));
+        };
+
+        let bound_method = heap.alloc_bound_method(BoundMethod::new(receiver, method));
+        self.pop();
+        self.push(Value::Obj(bound_method));
+        Ok(())
+    }
+
+    fn invoke(&mut self, name: &str, arg_count: u8, heap: &mut Heap, line: usize) -> VmResult<()> {
+        let receiver = self.peek(usize::from(arg_count));
+        let Value::Obj(instance) = receiver else {
+            return Err(Self::runtime_error_at(line, "Only instances have methods."));
+        };
+        if heap.as_instance(instance).is_none() {
+            return Err(Self::runtime_error_at(line, "Only instances have methods."));
+        }
+
+        let class = {
+            let instance = heap
+                .as_instance(instance)
+                .expect("checked instance object above");
+            if let Some(value) = instance.fields.get(name).copied() {
+                let callee_index = self.stack.len() - usize::from(arg_count) - 1;
+                self.stack[callee_index] = value;
+                return self.call_value(value, arg_count, heap, line);
+            }
+            instance.class
+        };
+
+        self.invoke_from_class(class, name, arg_count, heap, line)
+    }
+
+    fn invoke_from_class(
+        &mut self,
+        class: Handle,
+        name: &str,
+        arg_count: u8,
+        heap: &Heap,
+        line: usize,
+    ) -> VmResult<()> {
+        let Some(method) = heap
+            .as_class(class)
+            .expect("instance references a non-class object")
+            .methods
+            .get(name)
+            .copied()
+        else {
+            return Err(Self::runtime_error_at(
+                line,
+                &format!("Undefined property '{name}'."),
+            ));
+        };
+
+        self.call_closure(method, arg_count, heap, line)
     }
 
     fn arity_error(line: usize, expected: u8, actual: u8) -> VmError {

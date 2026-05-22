@@ -107,8 +107,10 @@ pub fn disassemble_instruction_with_heap(
             | OpCode::SetGlobal
             | OpCode::Class
             | OpCode::GetProperty
-            | OpCode::SetProperty),
+            | OpCode::SetProperty
+            | OpCode::Method),
         ) => constant_instruction(op, chunk, offset, heap, out),
+        Some(OpCode::Invoke) => invoke_instruction(chunk, offset, heap, out),
         Some(OpCode::Closure) => closure_instruction(chunk, offset, heap, out),
         // Byte operand: 2 bytes, prints a raw stack slot or argument count.
         Some(
@@ -201,6 +203,28 @@ fn constant_instruction(
         writeln!(out, "{mnemonic:<16} {idx:4} '{value}'")?;
     }
     Ok(offset + 2)
+}
+
+fn invoke_instruction(
+    chunk: &Chunk,
+    offset: usize,
+    heap: Option<&Heap>,
+    out: &mut dyn Write,
+) -> Result<usize, fmt::Error> {
+    let idx = chunk.code[offset + 1];
+    let arg_count = chunk.code[offset + 2];
+    let mnemonic = OpCode::Invoke.mnemonic();
+    let value = chunk.constants[idx as usize];
+    if let Some(heap) = heap {
+        writeln!(
+            out,
+            "{mnemonic:<16} ({arg_count} args) {idx:4} '{}'",
+            value.display(heap)
+        )?;
+    } else {
+        writeln!(out, "{mnemonic:<16} ({arg_count} args) {idx:4} '{value}'")?;
+    }
+    Ok(offset + 3)
 }
 
 fn byte_instruction(
@@ -345,6 +369,11 @@ mod tests {
         chunk.write_byte(field_idx, 2);
         chunk.write_op(OpCode::SetProperty, 3);
         chunk.write_byte(field_idx, 3);
+        chunk.write_op(OpCode::Method, 4);
+        chunk.write_byte(field_idx, 4);
+        chunk.write_op(OpCode::Invoke, 5);
+        chunk.write_byte(field_idx, 5);
+        chunk.write_byte(2, 5);
 
         let mut out = String::new();
         disassemble_chunk_with_heap(&chunk, "properties", Some(&heap), &mut out).unwrap();
@@ -354,6 +383,8 @@ mod tests {
 0000    1 OP_CLASS            0 'Bagel'
 0002    2 OP_GET_PROPERTY     1 'flavor'
 0004    3 OP_SET_PROPERTY     1 'flavor'
+0006    4 OP_METHOD           1 'flavor'
+0008    5 OP_INVOKE        (2 args)    1 'flavor'
 ";
         assert_eq!(out, expected);
     }

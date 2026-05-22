@@ -244,3 +244,27 @@ fn run_to_handles_classes_instances_and_fields() {
     ";
     assert_eq!(run(src).unwrap(), "Pair\nPair instance\n3\n");
 }
+
+#[test]
+fn run_to_handles_methods_this_and_initializers() {
+    let src = r#"
+        class Counter {
+            init(label) {
+                this.label = label;
+                this.count = 0;
+            }
+
+            inc() {
+                this.count = this.count + 1;
+                print this.label + ":";
+                print this.count;
+            }
+        }
+
+        var counter = Counter("hits");
+        var inc = counter.inc;
+        inc();
+        counter.inc();
+    "#;
+    assert_eq!(run(src).unwrap(), "hits:\n1\nhits:\n2\n");
+}

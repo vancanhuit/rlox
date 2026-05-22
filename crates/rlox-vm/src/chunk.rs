@@ -112,6 +112,12 @@ pub enum OpCode {
     GetProperty = 0x1f,
     /// `OP_SET_PROPERTY <idx>` — set an instance property by string name.
     SetProperty = 0x20,
+    /// `OP_METHOD <idx>` — bind the closure on top of the stack to the
+    /// class beneath it using string constant `idx` as the method name.
+    Method = 0x21,
+    /// `OP_INVOKE <idx> <arg_count>` — optimized property lookup plus
+    /// call for `receiver.method(args...)`.
+    Invoke = 0x22,
 }
 
 impl OpCode {
@@ -153,6 +159,8 @@ impl OpCode {
             0x1e => Some(Self::Class),
             0x1f => Some(Self::GetProperty),
             0x20 => Some(Self::SetProperty),
+            0x21 => Some(Self::Method),
+            0x22 => Some(Self::Invoke),
             _ => None,
         }
     }
@@ -193,6 +201,8 @@ impl OpCode {
             Self::Class => "OP_CLASS",
             Self::GetProperty => "OP_GET_PROPERTY",
             Self::SetProperty => "OP_SET_PROPERTY",
+            Self::Method => "OP_METHOD",
+            Self::Invoke => "OP_INVOKE",
         }
     }
 }
@@ -342,6 +352,8 @@ mod tests {
             OpCode::Class,
             OpCode::GetProperty,
             OpCode::SetProperty,
+            OpCode::Method,
+            OpCode::Invoke,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -428,5 +440,7 @@ mod tests {
         assert_eq!(OpCode::Class.mnemonic(), "OP_CLASS");
         assert_eq!(OpCode::GetProperty.mnemonic(), "OP_GET_PROPERTY");
         assert_eq!(OpCode::SetProperty.mnemonic(), "OP_SET_PROPERTY");
+        assert_eq!(OpCode::Method.mnemonic(), "OP_METHOD");
+        assert_eq!(OpCode::Invoke.mnemonic(), "OP_INVOKE");
     }
 }

@@ -24,8 +24,9 @@
 //! [`Obj::Function`] for compiled function prototypes, [`Obj::Closure`]
 //! for runtime function values, [`Obj::Upvalue`] for captured locals,
 //! [`Obj::Native`] for built-ins such as `clock`, [`Obj::Class`] for
-//! user-defined classes, and [`Obj::Instance`] for field-bearing class
-//! instances. Methods and inheritance arrive in later chapters.
+//! user-defined classes, [`Obj::Instance`] for field-bearing class
+//! instances, and [`Obj::BoundMethod`] for methods captured from a
+//! receiver. Inheritance arrives in a later chapter.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -124,6 +125,23 @@ impl Closure {
     }
 }
 
+/// A method closure paired with the receiver it was accessed from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoundMethod {
+    /// Receiver bound to the method's implicit `this`.
+    pub receiver: Value,
+    /// Closure to call when the bound method is invoked.
+    pub method: Handle,
+}
+
+impl BoundMethod {
+    /// Create a method value bound to `receiver`.
+    #[must_use]
+    pub const fn new(receiver: Value, method: Handle) -> Self {
+        Self { receiver, method }
+    }
+}
+
 /// Storage location for a captured variable.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UpvalueLocation {
@@ -171,19 +189,24 @@ impl fmt::Debug for NativeFunction {
     }
 }
 
-/// A user-defined Lox class. Chapter 27 classes are callable factories
-/// for instances; methods arrive in chapter 28.
+/// A user-defined Lox class. Classes are callable factories for
+/// instances and own a method table populated by `OP_METHOD`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Class {
     /// Name used for display and diagnostics.
     pub name: String,
+    /// Methods keyed by method name. Values are handles to closures.
+    pub methods: HashMap<String, Handle>,
 }
 
 impl Class {
     /// Create a class named `name`.
     #[must_use]
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into() }
+        Self {
+            name: name.into(),
+            methods: HashMap::new(),
+        }
     }
 }
 
@@ -216,6 +239,8 @@ pub enum Obj {
     Function(Function),
     /// A runtime callable closure.
     Closure(Closure),
+    /// A receiver bound to a method closure.
+    BoundMethod(BoundMethod),
     /// A captured local variable.
     Upvalue(Upvalue),
     /// A native Rust function exposed to Lox.
@@ -339,6 +364,11 @@ impl Heap {
         self.alloc(Obj::Closure(closure))
     }
 
+    /// Allocate an [`Obj::BoundMethod`] and return its handle.
+    pub fn alloc_bound_method(&mut self, bound_method: BoundMethod) -> Handle {
+        self.alloc(Obj::BoundMethod(bound_method))
+    }
+
     /// Allocate an [`Obj::Upvalue`] and return its handle.
     pub fn alloc_upvalue(&mut self, upvalue: Upvalue) -> Handle {
         self.alloc(Obj::Upvalue(upvalue))
@@ -411,6 +441,7 @@ impl Heap {
             Obj::Str(s) => Some(s),
             Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_)
@@ -425,6 +456,7 @@ impl Heap {
             Obj::Function(function) => Some(function),
             Obj::Str(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_)
@@ -439,6 +471,7 @@ impl Heap {
             Obj::Closure(closure) => Some(closure),
             Obj::Str(_)
             | Obj::Function(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_)
@@ -453,6 +486,22 @@ impl Heap {
             Obj::Closure(closure) => Some(closure),
             Obj::Str(_)
             | Obj::Function(_)
+            | Obj::BoundMethod(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Class(_)
+            | Obj::Instance(_) => None,
+        }
+    }
+
+    /// Convenience accessor for bound method objects.
+    #[must_use]
+    pub fn as_bound_method(&self, h: Handle) -> Option<BoundMethod> {
+        match self.get(h) {
+            Obj::BoundMethod(bound_method) => Some(*bound_method),
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_)
@@ -468,6 +517,7 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Native(_)
             | Obj::Class(_)
             | Obj::Instance(_) => None,
@@ -482,6 +532,7 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Native(_)
             | Obj::Class(_)
             | Obj::Instance(_) => None,
@@ -496,6 +547,7 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Class(_)
             | Obj::Instance(_) => None,
@@ -510,6 +562,22 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
+            | Obj::Upvalue(_)
+            | Obj::Native(_)
+            | Obj::Instance(_) => None,
+        }
+    }
+
+    /// Mutable convenience accessor for class objects.
+    #[must_use]
+    pub fn as_class_mut(&mut self, h: Handle) -> Option<&mut Class> {
+        match self.get_mut(h) {
+            Obj::Class(class) => Some(class),
+            Obj::Str(_)
+            | Obj::Function(_)
+            | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Instance(_) => None,
@@ -524,6 +592,7 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_) => None,
@@ -538,6 +607,7 @@ impl Heap {
             Obj::Str(_)
             | Obj::Function(_)
             | Obj::Closure(_)
+            | Obj::BoundMethod(_)
             | Obj::Upvalue(_)
             | Obj::Native(_)
             | Obj::Class(_) => None,
@@ -635,7 +705,7 @@ impl Heap {
 
     fn blacken_object(&mut self, handle: Handle) {
         let (values, handles) = match self.get(handle) {
-            Obj::Str(_) | Obj::Native(_) | Obj::Class(_) => (Vec::new(), Vec::new()),
+            Obj::Str(_) | Obj::Native(_) => (Vec::new(), Vec::new()),
             Obj::Function(function) => (function.chunk.constants.clone(), Vec::new()),
             Obj::Closure(closure) => {
                 let mut handles = Vec::with_capacity(1 + closure.upvalues.len());
@@ -643,10 +713,14 @@ impl Heap {
                 handles.extend(closure.upvalues.iter().copied());
                 (Vec::new(), handles)
             }
+            Obj::BoundMethod(bound_method) => {
+                (vec![bound_method.receiver], vec![bound_method.method])
+            }
             Obj::Upvalue(upvalue) => match upvalue.location {
                 UpvalueLocation::Open(_) => (Vec::new(), Vec::new()),
                 UpvalueLocation::Closed(value) => (vec![value], Vec::new()),
             },
+            Obj::Class(class) => (Vec::new(), class.methods.values().copied().collect()),
             Obj::Instance(instance) => (
                 instance.fields.values().copied().collect(),
                 vec![instance.class],
@@ -740,6 +814,7 @@ mod tests {
         let closure = h.alloc_closure(Closure::new(function, vec![upvalue]));
         let class = h.alloc_class(Class::new("Bagel"));
         let instance = h.alloc_instance(Instance::new(class));
+        let bound_method = h.alloc_bound_method(BoundMethod::new(Value::Obj(instance), closure));
         let native = h.alloc_native(NativeFunction {
             name: "clock",
             arity: 0,
@@ -748,6 +823,11 @@ mod tests {
 
         assert_eq!(h.as_function(function).unwrap().display_name(), "f");
         assert_eq!(h.as_closure(closure).unwrap().function, function);
+        assert_eq!(h.as_bound_method(bound_method).unwrap().method, closure);
+        assert_eq!(
+            h.as_bound_method(bound_method).unwrap().receiver,
+            Value::Obj(instance)
+        );
         assert_eq!(
             h.as_upvalue(upvalue).unwrap().location,
             UpvalueLocation::Open(3)
@@ -757,6 +837,7 @@ mod tests {
         assert_eq!(h.as_native(native).unwrap().name, "clock");
         assert_eq!(h.as_str(function), None);
         assert!(h.as_function(native).is_none());
+        assert!(h.as_bound_method(instance).is_none());
         assert!(h.as_class(instance).is_none());
     }
 
@@ -860,6 +941,39 @@ mod tests {
         assert_eq!(h.as_class(class).unwrap().name, "Box");
         assert_eq!(h.as_str(value), Some("field"));
         assert!(h.as_instance(instance).is_some());
+    }
+
+    #[test]
+    fn collect_garbage_traces_class_methods_and_bound_methods() {
+        let mut h = Heap::new();
+        let function = h.alloc_function(Function::with_upvalues(
+            Some("method".to_string()),
+            0,
+            0,
+            Chunk::new(),
+        ));
+        let closure = h.alloc_closure(Closure::new(function, Vec::new()));
+        let mut class = Class::new("Box");
+        class.methods.insert("method".to_string(), closure);
+        let class = h.alloc_class(class);
+        let instance = h.alloc_instance(Instance::new(class));
+        let bound_method = h.alloc_bound_method(BoundMethod::new(Value::Obj(instance), closure));
+        h.alloc_string("dead");
+
+        let stats = h.collect_garbage(GcRoots {
+            values: &[],
+            handles: &[class, bound_method],
+            chunks: &[],
+        });
+
+        assert_eq!(stats.before, 6);
+        assert_eq!(stats.after, 5);
+        assert_eq!(stats.collected, 1);
+        assert!(h.as_function(function).is_some());
+        assert!(h.as_closure(closure).is_some());
+        assert_eq!(h.as_class(class).unwrap().methods["method"], closure);
+        assert!(h.as_instance(instance).is_some());
+        assert!(h.as_bound_method(bound_method).is_some());
     }
 
     #[test]
