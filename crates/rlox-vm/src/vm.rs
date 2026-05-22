@@ -281,6 +281,8 @@ impl Vm {
             OpCode::SetGlobal => self.set_global(chunk, heap, frame_index, line)?,
             OpCode::GetProperty => self.get_property_op(chunk, heap, frame_index, line)?,
             OpCode::SetProperty => self.set_property(chunk, heap, frame_index, line)?,
+            OpCode::GetSuper => self.get_super_op(chunk, heap, frame_index, line)?,
+            OpCode::Inherit => self.inherit(line, heap)?,
             OpCode::Method => self.method(chunk, heap, frame_index),
             OpCode::GetLocal => {
                 let slot = usize::from(self.read_byte(chunk, heap, frame_index));
@@ -312,6 +314,7 @@ impl Vm {
                 self.call_op(chunk, heap, frame_index, line)?;
             }
             OpCode::Invoke => self.invoke_op(chunk, heap, frame_index, line)?,
+            OpCode::SuperInvoke => self.super_invoke_op(chunk, heap, frame_index, line)?,
             OpCode::Nil => self.push(Value::Nil),
             OpCode::True => self.push(Value::Bool(true)),
             OpCode::False => self.push(Value::Bool(false)),
@@ -395,6 +398,38 @@ impl Vm {
         self.invoke(&name, arg_count, heap, line)?;
         self.maybe_collect(heap, chunk);
         Ok(())
+    }
+
+    fn get_super_op(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let Value::Obj(superclass) = self.pop() else {
+            panic!("OP_GET_SUPER stack top does not reference a superclass");
+        };
+        let receiver = self.peek(0);
+        self.bind_method(superclass, &name, receiver, heap, line)?;
+        self.maybe_collect(heap, chunk);
+        Ok(())
+    }
+
+    fn super_invoke_op(
+        &mut self,
+        chunk: &Chunk,
+        heap: &mut Heap,
+        frame_index: usize,
+        line: usize,
+    ) -> VmResult<()> {
+        let name = self.read_string_constant(chunk, heap, frame_index);
+        let arg_count = self.read_byte(chunk, heap, frame_index);
+        let Value::Obj(superclass) = self.pop() else {
+            panic!("OP_SUPER_INVOKE stack top does not reference a superclass");
+        };
+        self.invoke_from_class(superclass, &name, arg_count, heap, line)
     }
 
     fn closure(&mut self, chunk: &Chunk, heap: &mut Heap, frame_index: usize) {
@@ -508,6 +543,30 @@ impl Vm {
             .methods
             .insert(name, method);
         self.pop();
+    }
+
+    fn inherit(&mut self, line: usize, heap: &mut Heap) -> VmResult<()> {
+        let Value::Obj(superclass) = self.peek(1) else {
+            return Err(Self::runtime_error_at(line, "Superclass must be a class."));
+        };
+        if heap.as_class(superclass).is_none() {
+            return Err(Self::runtime_error_at(line, "Superclass must be a class."));
+        }
+
+        let Value::Obj(subclass) = self.peek(0) else {
+            panic!("OP_INHERIT stack top does not reference a subclass");
+        };
+        let methods = heap
+            .as_class(superclass)
+            .expect("checked superclass object above")
+            .methods
+            .clone();
+        heap.as_class_mut(subclass)
+            .expect("OP_INHERIT target references a non-class object")
+            .methods
+            .extend(methods);
+        self.pop();
+        Ok(())
     }
 
     fn get_upvalue(&mut self, chunk: &Chunk, heap: &Heap, frame_index: usize) {

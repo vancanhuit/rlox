@@ -268,3 +268,28 @@ fn run_to_handles_methods_this_and_initializers() {
     "#;
     assert_eq!(run(src).unwrap(), "hits:\n1\nhits:\n2\n");
 }
+
+#[test]
+fn run_to_handles_superclasses_and_super_calls() {
+    let src = r#"
+        class Doughnut {
+            cook() {
+                print "fry";
+                this.finish("sprinkles");
+            }
+
+            finish(ingredient) {
+                print "finish " + ingredient;
+            }
+        }
+
+        class Cruller < Doughnut {
+            finish(ingredient) {
+                super.finish("icing");
+            }
+        }
+
+        Cruller().cook();
+    "#;
+    assert_eq!(run(src).unwrap(), "fry\nfinish icing\n");
+}

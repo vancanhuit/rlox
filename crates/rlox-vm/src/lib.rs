@@ -22,6 +22,7 @@
 //! - chapter 26: safe handle-based mark-sweep garbage collection.
 //! - chapter 27: classes, instances, and dynamic fields.
 //! - chapter 28: methods, `this`, initializers, and optimized invokes.
+//! - chapter 29: superclasses, inherited methods, and `super`.
 //!
 //! The crate exposes [`Chunk`], [`OpCode`], [`Value`], the
 //! [`compiler`] (single-pass Pratt over [`rlox_shared::Scanner`]), the
@@ -30,8 +31,8 @@
 //! build wires [`run_to`] into its CLI. The current VM executes a Lox
 //! program made of top-level statements, global/local declarations,
 //! structured control flow, first-class functions, closures, classes,
-//! instances, dynamic fields, methods, initializers, and VM-managed
-//! object reclamation.
+//! instances, dynamic fields, methods, initializers, superclasses,
+//! `super`, and VM-managed object reclamation.
 
 pub mod chunk;
 pub mod compiler;

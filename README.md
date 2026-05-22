@@ -29,13 +29,14 @@ cargo install --path crates/rlox \
     --no-default-features --features vm              # install the VM
 ```
 
-The `vm` feature is wired end-to-end through chapter 28 — `--features vm`
+The `vm` feature is wired end-to-end through chapter 29 — `--features vm`
 executes top-level Lox programs with expression statements, `print`, global
 `var` declarations, global reads and assignment, block statements, and
 block-scoped local variables, plus `if`/`else`, short-circuiting `and`/`or`,
 `while`, `for`, function declarations/calls, `return`, recursion, closures,
 the native `clock`, safe handle-based mark-sweep garbage collection, classes,
-instances, dynamic fields, methods, `this`, and initializers.
+instances, dynamic fields, methods, `this`, initializers, superclasses, and
+`super`.
 
 ### Milestone 1 — chapters 4–7 (scanner, parser, expressions)
 
@@ -80,7 +81,7 @@ instances, dynamic fields, methods, `this`, and initializers.
 | 26    | 26      | Garbage Collection (safe handle-based mark-sweep)    | done |
 | 27    | 27      | Classes and Instances                                | done |
 | 28    | 28      | Methods and Initializers                             | done |
-| 29    | 29      | Superclasses                                         | pending |
+| 29    | 29      | Superclasses                                         | done |
 | 30    | 30      | Optimization (NaN-boxing skipped — `unsafe_code = "forbid"`) | pending |
 
 ## Requirements

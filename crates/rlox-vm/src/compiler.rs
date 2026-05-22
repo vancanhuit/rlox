@@ -1,4 +1,4 @@
-//! Chapter 28 — Methods and Initializers.
+//! Chapter 29 — Superclasses.
 //!
 //! A single-pass Pratt parser that consumes tokens from the lazy
 //! [`rlox_shared::Scanner`] (chapter 16) and emits a [`Chunk`] of
@@ -16,7 +16,8 @@
 //! Chapter 25 adds closures and upvalues for captured locals. Chapter
 //! 27 adds class declarations plus instance field get/set expressions.
 //! Chapter 28 adds methods, `this`, initializers, and optimized method
-//! invocation bytecode.
+//! invocation bytecode. Chapter 29 completes the language with
+//! superclass inheritance and `super` calls.
 //!
 //! Pratt actions are encoded as a [`ParseFn`] enum (rather than as
 //! function pointers) and resolved through [`Compiler::run_parse_fn`];
@@ -121,6 +122,8 @@ enum ParseFn {
     Call,
     /// Parses instance property get/set expressions.
     Dot,
+    /// Parses superclass method access and calls.
+    Super,
     /// Parses `this` inside methods.
     This,
     /// Parses short-circuiting logical `and`.
@@ -150,6 +153,11 @@ struct Local {
 struct UpvalueRef {
     index: u8,
     is_local: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClassState {
+    has_superclass: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +276,11 @@ const fn rule_for(t: TokenType) -> ParseRule {
             infix: ParseFn::None,
             precedence: Precedence::None,
         },
+        TokenType::Super => ParseRule {
+            prefix: ParseFn::Super,
+            infix: ParseFn::None,
+            precedence: Precedence::None,
+        },
         // Chapter 18 — logical NOT (prefix only).
         TokenType::Bang => ParseRule {
             prefix: ParseFn::Unary,
@@ -321,10 +334,10 @@ struct Compiler<'src, 'heap> {
     function_arity: u8,
     /// Upvalues captured by the current function target.
     upvalues: Vec<UpvalueRef>,
-    /// Nesting depth of class bodies being compiled. Non-zero means
-    /// `this` is a valid expression and will resolve through locals or
-    /// upvalues.
-    class_depth: usize,
+    /// Stack of class bodies being compiled. The top entry determines
+    /// whether `this` and `super` are valid in the current lexical
+    /// context, including nested functions inside methods.
+    classes: Vec<ClassState>,
     /// Compiler states for lexically enclosing function bodies. The
     /// active state stays in the direct fields above for minimal churn
     /// with the chapter-24 compiler; this stack lets chapter 25 resolve
@@ -349,7 +362,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             function_type: state.function_type,
             function_arity: state.function_arity,
             upvalues: state.upvalues,
-            class_depth: 0,
+            classes: Vec::new(),
             enclosing: Vec::new(),
             errors: Vec::new(),
             panic_mode: false,
@@ -571,6 +584,7 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
             ParseFn::Variable => self.variable(can_assign),
             ParseFn::Call => self.call(),
             ParseFn::Dot => self.dot(can_assign),
+            ParseFn::Super => self.super_(),
             ParseFn::This => self.this(),
             ParseFn::And => self.and(),
             ParseFn::Or => self.or(),
@@ -607,7 +621,32 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
 
         self.emit_op_with_byte(OpCode::Class, name_constant);
         self.define_variable(name_constant);
-        self.class_depth += 1;
+        self.classes.push(ClassState {
+            has_superclass: false,
+        });
+
+        if self.match_token(TokenType::Less) {
+            self.consume(TokenType::Identifier, "Expect superclass name.");
+            if self.previous_token().ttype == TokenType::Identifier {
+                let superclass = self.previous_token().clone();
+                if superclass.lexeme == name.lexeme {
+                    self.error_at_previous("A class can't inherit from itself.");
+                }
+                self.variable(false);
+
+                self.begin_scope();
+                self.add_local(Self::synthetic_token("super", superclass.line));
+                self.define_variable(0);
+
+                self.named_variable(&name, false);
+                self.emit_op(OpCode::Inherit);
+                self.classes
+                    .last_mut()
+                    .expect("class state exists while compiling a class")
+                    .has_superclass = true;
+            }
+        }
+
         self.named_variable(&name, false);
 
         self.consume(TokenType::LeftBrace, "Expect '{' before class body.");
@@ -616,7 +655,15 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         }
         self.consume(TokenType::RightBrace, "Expect '}' after class body.");
         self.emit_op(OpCode::Pop);
-        self.class_depth -= 1;
+        if self
+            .classes
+            .last()
+            .expect("class state exists while compiling a class")
+            .has_superclass
+        {
+            self.end_scope();
+        }
+        self.classes.pop();
     }
 
     fn statement(&mut self) {
@@ -862,6 +909,10 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
     fn identifier_constant(&mut self, name: &Token) -> u8 {
         let handle = self.heap.alloc_string(name.lexeme.clone());
         self.chunk.add_constant(Value::Obj(handle))
+    }
+
+    fn synthetic_token(name: &str, line: usize) -> Token {
+        Token::new(TokenType::Identifier, name, None, line)
     }
 
     fn define_variable(&mut self, global: u8) {
@@ -1129,8 +1180,56 @@ impl<'src, 'heap> Compiler<'src, 'heap> {
         }
     }
 
+    fn super_(&mut self) {
+        let valid = if self.classes.is_empty() {
+            self.error_at_previous("Can't use 'super' outside of a class.");
+            false
+        } else if !self
+            .classes
+            .last()
+            .expect("class state exists while compiling a class")
+            .has_superclass
+        {
+            self.error_at_previous("Can't use 'super' in a class with no superclass.");
+            false
+        } else {
+            true
+        };
+
+        self.consume(TokenType::Dot, "Expect '.' after 'super'.");
+        self.consume(TokenType::Identifier, "Expect superclass method name.");
+        if self.previous_token().ttype != TokenType::Identifier {
+            return;
+        }
+
+        let name = self.previous_token().clone();
+        let name_constant = self.identifier_constant(&name);
+
+        if !valid {
+            if self.match_token(TokenType::LeftParen) {
+                let _ = self.argument_list();
+            }
+            return;
+        }
+
+        let this = Self::synthetic_token("this", name.line);
+        self.named_variable(&this, false);
+
+        if self.match_token(TokenType::LeftParen) {
+            let arg_count = self.argument_list();
+            let super_ = Self::synthetic_token("super", name.line);
+            self.named_variable(&super_, false);
+            self.emit_op_with_byte(OpCode::SuperInvoke, name_constant);
+            self.emit_byte(arg_count);
+        } else {
+            let super_ = Self::synthetic_token("super", name.line);
+            self.named_variable(&super_, false);
+            self.emit_op_with_byte(OpCode::GetSuper, name_constant);
+        }
+    }
+
     fn this(&mut self) {
-        if self.class_depth == 0 {
+        if self.classes.is_empty() {
             self.error_at_previous("Can't use 'this' outside of a class.");
             return;
         }
@@ -1304,6 +1403,18 @@ mod tests {
 
     fn eval_err(expr: &str) -> VmError {
         run_err(&format!("print {expr};"))
+    }
+
+    fn chunk_or_functions_contain_opcode(chunk: &Chunk, heap: &Heap, op: OpCode) -> bool {
+        chunk.code.contains(&(op as u8))
+            || chunk.constants.iter().any(|value| {
+                let Value::Obj(handle) = value else {
+                    return false;
+                };
+                heap.as_function(*handle).is_some_and(|function| {
+                    chunk_or_functions_contain_opcode(&function.chunk, heap, op)
+                })
+            })
     }
 
     #[test]
@@ -2276,6 +2387,109 @@ mod tests {
     }
 
     #[test]
+    fn subclasses_inherit_methods_and_can_override_them() {
+        let src = r#"
+            class Doughnut {
+                cook() { print "fry"; }
+                finish() { print "glaze"; }
+            }
+
+            class Cruller < Doughnut {
+                finish() { print "icing"; }
+            }
+
+            Cruller().cook();
+            Cruller().finish();
+        "#;
+        assert_eq!(run(src).0, "fry\nicing\n");
+    }
+
+    #[test]
+    fn super_calls_resolve_against_the_enclosing_class() {
+        let src = r#"
+            class A {
+                method() { print "A"; }
+            }
+
+            class B < A {
+                method() { print "B"; }
+                test() { super.method(); }
+            }
+
+            class C < B {}
+
+            C().test();
+        "#;
+        assert_eq!(run(src).0, "A\n");
+    }
+
+    #[test]
+    fn super_method_access_returns_a_bound_method() {
+        let src = r#"
+            class A {
+                method() { print "A"; }
+            }
+
+            class B < A {
+                method() {
+                    var closure = super.method;
+                    closure();
+                }
+            }
+
+            B().method();
+        "#;
+        assert_eq!(run(src).0, "A\n");
+    }
+
+    #[test]
+    fn subclass_initializers_can_call_super_init() {
+        let src = r#"
+            class Base {
+                init(name) {
+                    this.name = name;
+                }
+            }
+
+            class Derived < Base {
+                init(name, suffix) {
+                    super.init(name);
+                    this.suffix = suffix;
+                }
+
+                label() {
+                    print this.name + this.suffix;
+                }
+            }
+
+            Derived("lo", "x").label();
+        "#;
+        assert_eq!(run(src).0, "lox\n");
+    }
+
+    #[test]
+    fn nested_closures_inside_methods_can_capture_super() {
+        let src = r#"
+            class A {
+                method() { print "A"; }
+            }
+
+            class B < A {
+                method() {
+                    fun closure() {
+                        super.method();
+                    }
+                    return closure;
+                }
+            }
+
+            var closure = B().method();
+            closure();
+        "#;
+        assert_eq!(run(src).0, "A\n");
+    }
+
+    #[test]
     fn property_access_runtime_errors_match_clox() {
         let VmError::Runtime { message, .. } = run_err(
             r"
@@ -2317,6 +2531,69 @@ mod tests {
             ",
         );
         assert_eq!(message, "Undefined property 'missing'.");
+    }
+
+    #[test]
+    fn superclass_runtime_errors_match_clox() {
+        let VmError::Runtime { message, .. } = run_err(
+            r#"
+            var NotClass = "not a class";
+            class Bad < NotClass {}
+            "#,
+        );
+        assert_eq!(message, "Superclass must be a class.");
+
+        let VmError::Runtime { message, .. } = run_err(
+            r"
+            class A {}
+            class B < A {
+                method() {
+                    super.missing();
+                }
+            }
+            B().method();
+            ",
+        );
+        assert_eq!(message, "Undefined property 'missing'.");
+    }
+
+    #[test]
+    fn super_and_self_inheritance_are_compile_errors_when_invalid() {
+        let errs = compile_err("super.method();");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "Can't use 'super' outside of a class."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err(
+            r"
+            class A {
+                method() {
+                    super.method();
+                }
+            }
+            ",
+        );
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. }
+                    if message == "Can't use 'super' in a class with no superclass."
+            )),
+            "errors were: {errs:?}"
+        );
+
+        let errs = compile_err("class Oops < Oops {}");
+        assert!(
+            errs.iter().any(|e| matches!(
+                e,
+                LoxError::Parse { message, .. } if message == "A class can't inherit from itself."
+            )),
+            "errors were: {errs:?}"
+        );
     }
 
     #[test]
@@ -2401,5 +2678,39 @@ mod tests {
                 .code
                 .contains(&(OpCode::GetLocal as u8))
         );
+    }
+
+    #[test]
+    fn compiler_emits_inheritance_and_super_opcodes() {
+        let (chunk, heap) = compile_ok(
+            r"
+            class A {
+                method() {}
+            }
+
+            class B < A {
+                access() {
+                    var closure = super.method;
+                    closure();
+                }
+
+                call() {
+                    super.method();
+                }
+            }
+            ",
+        );
+
+        assert!(chunk.code.contains(&(OpCode::Inherit as u8)));
+        assert!(chunk_or_functions_contain_opcode(
+            &chunk,
+            &heap,
+            OpCode::GetSuper
+        ));
+        assert!(chunk_or_functions_contain_opcode(
+            &chunk,
+            &heap,
+            OpCode::SuperInvoke
+        ));
     }
 }
