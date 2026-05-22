@@ -85,6 +85,12 @@ pub enum OpCode {
     GetLocal = 0x14,
     /// `OP_SET_LOCAL <slot>` — assign an existing local stack slot.
     SetLocal = 0x15,
+    /// `OP_JUMP <offset>` — unconditionally skip forward by a 16-bit offset.
+    Jump = 0x16,
+    /// `OP_JUMP_IF_FALSE <offset>` — skip forward if the top stack value is falsey.
+    JumpIfFalse = 0x17,
+    /// `OP_LOOP <offset>` — jump backward by a 16-bit offset.
+    Loop = 0x18,
 }
 
 impl OpCode {
@@ -115,6 +121,9 @@ impl OpCode {
             0x13 => Some(Self::SetGlobal),
             0x14 => Some(Self::GetLocal),
             0x15 => Some(Self::SetLocal),
+            0x16 => Some(Self::Jump),
+            0x17 => Some(Self::JumpIfFalse),
+            0x18 => Some(Self::Loop),
             _ => None,
         }
     }
@@ -144,6 +153,9 @@ impl OpCode {
             Self::SetGlobal => "OP_SET_GLOBAL",
             Self::GetLocal => "OP_GET_LOCAL",
             Self::SetLocal => "OP_SET_LOCAL",
+            Self::Jump => "OP_JUMP",
+            Self::JumpIfFalse => "OP_JUMP_IF_FALSE",
+            Self::Loop => "OP_LOOP",
         }
     }
 }
@@ -282,6 +294,9 @@ mod tests {
             OpCode::SetGlobal,
             OpCode::GetLocal,
             OpCode::SetLocal,
+            OpCode::Jump,
+            OpCode::JumpIfFalse,
+            OpCode::Loop,
         ] {
             assert_eq!(OpCode::from_byte(op as u8), Some(op));
         }
@@ -357,5 +372,8 @@ mod tests {
         assert_eq!(OpCode::DefineGlobal.mnemonic(), "OP_DEFINE_GLOBAL");
         assert_eq!(OpCode::GetLocal.mnemonic(), "OP_GET_LOCAL");
         assert_eq!(OpCode::SetLocal.mnemonic(), "OP_SET_LOCAL");
+        assert_eq!(OpCode::Jump.mnemonic(), "OP_JUMP");
+        assert_eq!(OpCode::JumpIfFalse.mnemonic(), "OP_JUMP_IF_FALSE");
+        assert_eq!(OpCode::Loop.mnemonic(), "OP_LOOP");
     }
 }
