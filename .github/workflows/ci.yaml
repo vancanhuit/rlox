@@ -53,11 +53,8 @@ jobs:
   build:
     # Two axes: target architecture × backend feature.
     #   - features=tree (default) — the chapter 4-13 tree-walk interpreter.
-    #     Smoke-tested against the full `.lox` corpus.
-    #   - features=vm — the chapter 14+ bytecode VM. At chapter 17 it only
-    #     handles a single expression per file; the smoke corpus broadens
-    #     to cover it once chapter 21 (Globals) lands and the VM gains
-    #     statements and `print`.
+    #   - features=vm — the chapter 14-30 bytecode VM.
+    # Both backends are smoke-tested against the full `.lox` corpus.
     name: Build (${{ matrix.target }}, ${{ matrix.features }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -118,10 +115,6 @@ jobs:
         # Drives target/release/rlox against scripts/smoke/*.lox and asserts
         # on stdout / stderr / exit code per the //expect: directives.
         # `--no-build` reuses the artifact from the previous step.
-        # The smoke corpus exercises full Lox programs (statements +
-        # `print` + classes); the bytecode VM only catches up at
-        # chapter 21, so for now smoke runs only on the tree-walk leg.
-        if: matrix.features == 'tree'
         run: python3 scripts/smoke_test.py --no-build
 
       - name: Package binary
