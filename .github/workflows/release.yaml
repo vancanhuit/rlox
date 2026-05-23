@@ -1,10 +1,11 @@
 # Release pipeline.
 #
 # Triggered by pushing a semver tag of the form `v1.2.3` or `v1.2.3-beta1`.
-# Builds the VM-backed rlox binary for both linux/amd64 and linux/arm64 on
-# native runners (no cross-compilation), packages each as a tarball with a
-# per-archive sha256, then aggregates everything into a single GitHub Release
-# whose body is rendered by git-cliff from the (prev_tag, this_tag] range.
+# Builds the VM-backed rlox binary for Linux, macOS, and Windows on native
+# runners (no cross-compilation), packages Unix-like builds as tarballs and
+# Windows builds as zip files with per-archive sha256 files, then aggregates
+# everything into a single GitHub Release whose body is rendered by git-cliff
+# from the (prev_tag, this_tag] range.
 
 name: Release
 
@@ -40,11 +41,31 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            archive: tar.gz
+            binary: rlox
           - target: aarch64-unknown-linux-gnu
             # Native ARM64 runner — free for public repos. Avoids the
             # cross-toolchain dance that `cargo build --target` on x86_64
             # would otherwise require for a glibc-linked binary.
             runner: ubuntu-24.04-arm
+            archive: tar.gz
+            binary: rlox
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive: tar.gz
+            binary: rlox
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            archive: tar.gz
+            binary: rlox
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+            binary: rlox.exe
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            archive: zip
+            binary: rlox.exe
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -54,30 +75,59 @@ jobs:
         # target is added automatically by rustup on the matching runner.
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # Per-target cache so the two matrix legs don't thrash.
+          # Per-target cache so the matrix legs don't thrash.
           key: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --locked --bin rlox --no-default-features --features vm
+        run: cargo build --release --locked --bin rlox --target ${{ matrix.target }} --no-default-features --features vm
 
-      - name: Package binary
+      - name: Package binary (tar.gz)
+        if: matrix.archive == 'tar.gz'
         env:
           TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
         run: |
           set -euo pipefail
           mkdir -p dist
           archive="rlox_${GITHUB_REF_NAME}_${TARGET}.tar.gz"
           stage="dist/rlox_${GITHUB_REF_NAME}_${TARGET}"
           mkdir -p "$stage"
-          cp target/release/rlox "$stage/rlox"
+          cp "target/${TARGET}/release/${BINARY}" "$stage/rlox"
           cp README.md LICENSE "$stage/" 2>/dev/null || true
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"
           rm -rf "$stage"
-          ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          if command -v sha256sum >/dev/null 2>&1; then
+            ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          else
+            ( cd dist && shasum -a 256 "$archive" > "$archive.sha256" )
+          fi
           ls -la dist
+
+      - name: Package binary (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $archive = "rlox_${env:GITHUB_REF_NAME}_${env:TARGET}.zip"
+          $stage = "dist/rlox_${env:GITHUB_REF_NAME}_${env:TARGET}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/${env:TARGET}/release/${env:BINARY}" (Join-Path $stage $env:BINARY)
+          Copy-Item README.md, LICENSE $stage -ErrorAction SilentlyContinue
+          Compress-Archive -Path $stage -DestinationPath "dist/$archive" -Force
+          Remove-Item -Recurse -Force $stage
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
+          "$hash  $archive" | Out-File -FilePath "dist/$archive.sha256" -Encoding ascii
+          Get-ChildItem dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -86,6 +136,8 @@ jobs:
           path: |
             dist/rlox_*.tar.gz
             dist/rlox_*.tar.gz.sha256
+            dist/rlox_*.zip
+            dist/rlox_*.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -113,8 +165,10 @@ jobs:
         run: |
           set -euo pipefail
           cd dist
-          # Produce a single SHA256SUMS that lists every per-arch tarball.
-          sha256sum *.tar.gz > SHA256SUMS
+          # Produce a single SHA256SUMS that lists every release archive.
+          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%f\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
           ls -la
 
       - name: Generate release notes
@@ -142,4 +196,6 @@ jobs:
           files: |
             dist/rlox_*.tar.gz
             dist/rlox_*.tar.gz.sha256
+            dist/rlox_*.zip
+            dist/rlox_*.zip.sha256
             dist/SHA256SUMS
