@@ -43,14 +43,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --locked
 
-  # Same target architecture matrix as the release workflow, plus one leg per
-  # backend, but produces *development* binaries on every PR and every push to
-  # main. The version label is
+  # Linux release-style binary matrix with one leg per backend, produced on
+  # every PR and every push to main. The version label is
   # derived from `git describe --tags --always --dirty`, falling back to
   # `dev-<sha>` so a developer can always identify which commit a given
-  # artifact came from. Artifacts are retained for 14 days; the release
-  # workflow attaches the matching tarballs to a GitHub Release for tag
-  # pushes.
+  # artifact came from. Artifacts are retained for 14 days. The release
+  # workflow separately publishes VM-backed Linux, macOS, and Windows archives
+  # for tag pushes.
   build:
     # Two axes: target architecture × backend feature.
     #   - features=tree (default) — the chapter 4-13 tree-walk interpreter.

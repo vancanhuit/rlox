@@ -30,8 +30,8 @@ are enforced by CI so contributions stay consistent.
    `feat(parser): add Pratt expression parser`. The
    `Conventional Commits` workflow validates this on every push to the PR.
 5. **Wait for CI.** Required checks include `Lint and test`, `Coverage`,
-   `Audit`, `Conventional Commits`, Codecov patch status, and the release
-   binary build/smoke-test matrix for both backends and architectures.
+   `Audit`, `Conventional Commits`, Codecov patch status, and the optimized
+   Linux binary build/smoke-test matrix for both backends and architectures.
 6. **Squash-merge.** The repository ruleset only permits squash merges, so
    the PR title becomes the single commit on `main`. Local commit messages
    during work-in-progress are not linted — only the squashed result matters.
@@ -89,14 +89,17 @@ Releases are tag-driven. To publish `vX.Y.Z`:
    ```
 
 3. The [`Release`](.github/workflows/release.yaml) workflow fires on the tag:
-   - Builds the VM-backed `target/release/rlox` natively on each runner for both
-     `x86_64-unknown-linux-gnu` (on `ubuntu-latest`) and
-     `aarch64-unknown-linux-gnu` (on `ubuntu-24.04-arm`).
-   - Packages each as `rlox_vX.Y.Z_<target>.tar.gz` with a
-     per-archive `.sha256`, plus an aggregate `SHA256SUMS` listing both.
+   - Builds the VM-backed `target/<target>/release/rlox` or `rlox.exe`
+     natively on Linux, macOS, and Windows runners for:
+     `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
+     `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+     `x86_64-pc-windows-msvc`, and `aarch64-pc-windows-msvc`.
+   - Packages Unix-like builds as `rlox_vX.Y.Z_<target>.tar.gz` and Windows
+     builds as `rlox_vX.Y.Z_<target>.zip`, each with a per-archive `.sha256`,
+     plus an aggregate `SHA256SUMS` listing every archive.
    - Renders release notes for the `(prev_tag, this_tag]` range via
      [`git-cliff`](https://git-cliff.org) using [`cliff.toml`](cliff.toml).
-   - Publishes a single GitHub Release with both binaries and the notes attached.
+   - Publishes a single GitHub Release with all binaries and the notes attached.
    - Tags with a `-suffix` (e.g. `v0.1.0-beta1`) are marked as
      prereleases automatically.
 
