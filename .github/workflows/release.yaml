@@ -171,16 +171,35 @@ jobs:
             | xargs -0 sha256sum > SHA256SUMS
           ls -la
 
+      - name: Resolve release note range
+        id: release_notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            previous="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          else
+            previous="$(git describe --tags --abbrev=0 --exclude '*-*' "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+          fi
+
+          if [[ -n "$previous" ]]; then
+            range="${previous}..${GITHUB_REF_NAME}"
+          else
+            range="$GITHUB_REF_NAME"
+          fi
+
+          echo "range=$range" >> "$GITHUB_OUTPUT"
+          echo "Resolved release note range: $range"
+
       - name: Generate release notes
-        # `--current` resolves the previous semver tag from git's tag
-        # graph automatically. Output is written to dist/CHANGELOG.md
-        # via the action's $OUTPUT env contract.
+        # Output is written to dist/CHANGELOG.md via the action's
+        # $OUTPUT env contract.
         # Stable releases ignore prerelease tags so a temporary tag such
         # as `v0.3.0-dev` does not split or duplicate the final notes.
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --current ${{ contains(github.ref_name, '-') && '' || '--ignore-tags ".*-.*"' }}
+          args: ${{ steps.release_notes.outputs.range }} ${{ contains(github.ref_name, '-') && '' || '--ignore-tags ".*-.*"' }}
         env:
           OUTPUT: dist/CHANGELOG.md
 
