@@ -30,8 +30,9 @@ are enforced by CI so contributions stay consistent.
    `feat(parser): add Pratt expression parser`. The
    `Conventional Commits` workflow validates this on every push to the PR.
 5. **Wait for CI.** Required checks include `Lint and test`, `Coverage`,
-   `Audit`, `Conventional Commits`, Codecov patch status, and the optimized
-   Linux binary build/smoke-test matrix for both backends and architectures.
+   `Audit`, `Conventional Commits`, Codecov patch status, and the native
+   Linux/macOS/Windows binary build/smoke-test matrix for both backends and
+   architectures.
 6. **Squash-merge.** The repository ruleset only permits squash merges, so
    the PR title becomes the single commit on `main`. Local commit messages
    during work-in-progress are not linted — only the squashed result matters.

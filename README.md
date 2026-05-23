@@ -325,13 +325,13 @@ scripts/smoke_test.py                # build release + run every .lox
 scripts/smoke_test.py --debug        # use the debug artifact
 scripts/smoke_test.py --filter class # only files with "class" in the name
 scripts/smoke_test.py --no-build     # reuse an existing artifact
+scripts/smoke_test.py --binary target/release/rlox # use a specific binary
 ```
 
 The same harness runs in CI on every push and pull request for both `tree`
-and `vm` optimized Linux binaries on `x86_64-unknown-linux-gnu` and
-`aarch64-unknown-linux-gnu`, so an end-to-end regression in exit codes,
-stderr formatting, or artifact packaging blocks merges just like a unit-test
-failure.
+and `vm` optimized native binaries on Linux, macOS, and Windows targets, so an
+end-to-end regression in exit codes, stderr formatting, or artifact packaging
+blocks merges just like a unit-test failure.
 
 ## Testing approach
 
@@ -354,7 +354,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow. In short:
 - **Conventional Commits** are enforced on PR titles only (squash-merge means the title becomes the single commit on `main`). See [`.github/workflows/pr-title.yaml`](.github/workflows/pr-title.yaml).
 - **Branch protection** for `main` is managed via a GitHub repository ruleset committed at [`.github/rulesets/main.json`](.github/rulesets/main.json): squash-merge only, linear history, all CI checks required, no force pushes or deletions, conversation resolution required.
 - **CI** workflows under [`.github/workflows/`](.github/workflows/):
-  - `ci.yaml` — `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, optimized Linux binary builds, smoke tests, and artifact packaging for both backends.
+  - `ci.yaml` — `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --all-targets --locked`, optimized Linux/macOS/Windows binary builds, smoke tests, and artifact packaging for both backends.
   - `coverage-and-audit.yaml` — `cargo-llvm-cov` (uploaded to Codecov) and `cargo audit --deny warnings`.
   - `pr-title.yaml` — Conventional Commits validation.
 

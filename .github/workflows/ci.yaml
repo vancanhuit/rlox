@@ -43,42 +43,58 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --locked
 
-  # Linux release-style binary matrix with one leg per backend, produced on
-  # every PR and every push to main. The version label is
+  # Release-style binary matrix with one leg per native OS target and backend,
+  # produced on every PR and every push to main. The version label is
   # derived from `git describe --tags --always --dirty`, falling back to
   # `dev-<sha>` so a developer can always identify which commit a given
-  # artifact came from. Artifacts are retained for 14 days. The release
-  # workflow separately publishes VM-backed Linux, macOS, and Windows archives
-  # for tag pushes.
+  # artifact came from. Artifacts are retained for 14 days; the release
+  # workflow publishes the VM-backed archives for tag pushes.
   build:
-    # Two axes: target architecture × backend feature.
+    # Two axes: native target × backend feature.
     #   - features=tree (default) — the chapter 4-13 tree-walk interpreter.
     #   - features=vm — the chapter 14-30 bytecode VM.
     # Both backends are smoke-tested against the full `.lox` corpus.
-    name: Build (${{ matrix.target }}, ${{ matrix.features }})
-    runs-on: ${{ matrix.runner }}
+    name: Build (${{ matrix.platform.target }}, ${{ matrix.backend.features }})
+    runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        platform:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            features: tree
-            cargo_features: ""
-            backend_label: tree
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-            features: vm
-            cargo_features: "--no-default-features --features vm"
-            backend_label: vm
+            archive: tar.gz
+            binary: rlox
+            python: python3
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-24.04-arm
-            features: tree
+            archive: tar.gz
+            binary: rlox
+            python: python3
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive: tar.gz
+            binary: rlox
+            python: python3
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            archive: tar.gz
+            binary: rlox
+            python: python3
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+            binary: rlox.exe
+            python: python
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            archive: zip
+            binary: rlox.exe
+            python: python
+        backend:
+          - features: tree
             cargo_features: ""
             backend_label: tree
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
-            features: vm
+          - features: vm
             cargo_features: "--no-default-features --features vm"
             backend_label: vm
     steps:
@@ -91,14 +107,18 @@ jobs:
       - name: Install Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.platform.target }}
+
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
         with:
           # Per-(target, features) cache so the matrix legs don't thrash.
-          key: ${{ matrix.target }}-${{ matrix.features }}
+          key: ${{ matrix.platform.target }}-${{ matrix.backend.features }}
 
       - name: Resolve development version
         id: version
+        shell: bash
         run: |
           set -euo pipefail
           ver="$(git describe --tags --always --dirty 2>/dev/null || true)"
@@ -109,38 +129,69 @@ jobs:
           echo "Resolved development version: $ver"
 
       - name: Build release binary
-        run: cargo build --release --locked --bin rlox ${{ matrix.cargo_features }}
+        run: cargo build --release --locked --bin rlox --target ${{ matrix.platform.target }} ${{ matrix.backend.cargo_features }}
 
       - name: Smoke-test the binary
-        # Drives target/release/rlox against scripts/smoke/*.lox and asserts
-        # on stdout / stderr / exit code per the //expect: directives.
+        # Drives the freshly built native binary against scripts/smoke/*.lox
+        # and asserts on stdout / stderr / exit code per the //expect: directives.
         # `--no-build` reuses the artifact from the previous step.
-        run: python3 scripts/smoke_test.py --no-build
+        run: ${{ matrix.platform.python }} scripts/smoke_test.py --no-build --binary "target/${{ matrix.platform.target }}/release/${{ matrix.platform.binary }}"
 
-      - name: Package binary
+      - name: Package binary (tar.gz)
+        if: matrix.platform.archive == 'tar.gz'
+        shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          TARGET: ${{ matrix.target }}
-          BACKEND: ${{ matrix.backend_label }}
+          TARGET: ${{ matrix.platform.target }}
+          BACKEND: ${{ matrix.backend.backend_label }}
+          BINARY: ${{ matrix.platform.binary }}
         run: |
           set -euo pipefail
           mkdir -p dist
           archive="rlox-${BACKEND}_${VERSION}_${TARGET}.tar.gz"
           stage="dist/rlox-${BACKEND}_${VERSION}_${TARGET}"
           mkdir -p "$stage"
-          cp target/release/rlox "$stage/rlox"
+          cp "target/${TARGET}/release/${BINARY}" "$stage/rlox"
           cp README.md LICENSE "$stage/" 2>/dev/null || true
           tar -czf "dist/$archive" -C dist "$(basename "$stage")"
           rm -rf "$stage"
-          ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          if command -v sha256sum >/dev/null 2>&1; then
+            ( cd dist && sha256sum "$archive" > "$archive.sha256" )
+          else
+            ( cd dist && shasum -a 256 "$archive" > "$archive.sha256" )
+          fi
           ls -la dist
+
+      - name: Package binary (zip)
+        if: matrix.platform.archive == 'zip'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TARGET: ${{ matrix.platform.target }}
+          BACKEND: ${{ matrix.backend.backend_label }}
+          BINARY: ${{ matrix.platform.binary }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $archive = "rlox-${env:BACKEND}_${env:VERSION}_${env:TARGET}.zip"
+          $stage = "dist/rlox-${env:BACKEND}_${env:VERSION}_${env:TARGET}"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/${env:TARGET}/release/${env:BINARY}" (Join-Path $stage $env:BINARY)
+          Copy-Item README.md, LICENSE $stage -ErrorAction SilentlyContinue
+          Compress-Archive -Path $stage -DestinationPath "dist/$archive" -Force
+          Remove-Item -Recurse -Force $stage
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$archive").Hash.ToLowerInvariant()
+          "$hash  $archive" | Out-File -FilePath "dist/$archive.sha256" -Encoding ascii
+          Get-ChildItem dist
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          name: rlox-${{ matrix.backend_label }}-${{ steps.version.outputs.version }}-${{ matrix.target }}
+          name: rlox-${{ matrix.backend.backend_label }}-${{ steps.version.outputs.version }}-${{ matrix.platform.target }}
           path: |
             dist/rlox-*.tar.gz
             dist/rlox-*.tar.gz.sha256
+            dist/rlox-*.zip
+            dist/rlox-*.zip.sha256
           if-no-files-found: error
           retention-days: 14

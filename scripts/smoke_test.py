@@ -15,6 +15,7 @@ occurrence (you usually only have one).
 Usage::
 
     scripts/smoke_test.py [--release|--debug] [--filter SUBSTR] [--no-build]
+                          [--binary PATH]
 
 Exits 0 when every test passes, 1 otherwise. Suitable for CI.
 """
@@ -107,13 +108,18 @@ class Outcome:
 # ---- driver --------------------------------------------------------------
 
 
+def default_binary(profile: str) -> Path:
+    name = "rlox.exe" if os.name == "nt" else "rlox"
+    return REPO_ROOT / "target" / profile / name
+
+
 def build_binary(profile: str) -> Path:
     args = ["cargo", "build", "--quiet"]
     if profile == "release":
         args.append("--release")
     print(f"Building rlox ({profile})...")
     subprocess.run(args, cwd=REPO_ROOT, check=True)
-    return REPO_ROOT / "target" / profile / "rlox"
+    return default_binary(profile)
 
 
 def run_one(binary: Path, source: Path) -> Outcome:
@@ -229,10 +235,22 @@ def main() -> int:
         default="",
         help="only run tests whose name contains this substring",
     )
+    ap.add_argument(
+        "--binary",
+        type=Path,
+        help="path to the interpreter binary to test",
+    )
     args = ap.parse_args()
 
-    if args.no_build:
-        binary = REPO_ROOT / "target" / args.profile / "rlox"
+    if args.binary is not None:
+        binary = args.binary
+        if not binary.is_absolute():
+            binary = REPO_ROOT / binary
+        if not binary.exists():
+            print(f"{binary} doesn't exist", file=sys.stderr)
+            return 1
+    elif args.no_build:
+        binary = default_binary(args.profile)
         if not binary.exists():
             print(
                 f"--no-build given but {binary} doesn't exist", file=sys.stderr
