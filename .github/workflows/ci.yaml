@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         # `rust-toolchain.toml` pins the channel + components.
@@ -99,7 +99,7 @@ jobs:
             backend_label: vm
     steps:
       - name: Checkout (full history)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # `git describe --tags` needs the full tag graph.
           fetch-depth: 0
